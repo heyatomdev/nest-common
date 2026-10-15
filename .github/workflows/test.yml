@@ -1,7 +1,9 @@
 name: Test
 
 on:
+  # Branches only: a v* tag is checked by publish.yml (prepublishOnly), not twice.
   push:
+    branches: ['**']
   pull_request:
 
 jobs:
