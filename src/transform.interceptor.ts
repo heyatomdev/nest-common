@@ -23,7 +23,7 @@ export const NoTransform = () => SetMetadata(NO_TRANSFORM_KEY, true);
  * Set on the request by `TransformInterceptor` for `@NoTransform()` handlers: exception
  * filters get no handler/class from Nest, so this is how the filter learns about it.
  */
-export const NO_TRANSFORM_REQUEST = Symbol('heyatom:no-transform');
+export const NO_TRANSFORM_REQUEST = Symbol.for('@heyatom/nest-common/no-transform');
 
 /**
  * Wraps every 2xx JSON body in `{ data }` (api.md §2). Passes through:

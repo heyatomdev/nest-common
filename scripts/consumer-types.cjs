@@ -15,7 +15,8 @@ try {
   const peers = require(join(root, 'package.json')).peerDependencies;
   writeFileSync(join(dir, 'package.json'), JSON.stringify({
     name: 'consumer', private: true,
-    dependencies: { '@heyatom/nest-common': `file:${tgz}`, ...peers, typescript: '^6.0.0' },
+    // Pinned: the version gatherly hit TS2883 with; a new 6.x must not break a tag already pushed.
+    dependencies: { '@heyatom/nest-common': `file:${tgz}`, ...peers, typescript: '6.0.3' },
   }));
   mkdirSync(join(dir, 'src'));
   writeFileSync(join(dir, 'src', 'svc.ts'), [
@@ -29,7 +30,13 @@ try {
     '  metrics(m: MetricsService) { return m.registry; }',
     '}',
   ].join('\n'));
-  sh('pnpm install --silent --config.auto-install-peers=false');
+  try {
+    sh('pnpm install --silent --config.auto-install-peers=false');
+  } catch (err) {
+    console.error(`FAIL pnpm install\n${err.stderr ?? ''}${err.stdout ?? ''}`);
+    process.exitCode = 1;
+    return;
+  }
   const base = '--ignoreConfig --declaration --emitDeclarationOnly --strict --skipLibCheck --experimentalDecorators --rootDir src --outDir out src/svc.ts';
   for (const mode of [
     '--module commonjs', // TS 6 default resolution: bundler

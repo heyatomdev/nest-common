@@ -169,7 +169,9 @@ jwks() { return { keys }; }
 `paginate()` result carries a hidden marker (`isPaginated()`), so an entity that merely has `data`
 and `meta` fields is still wrapped, and a hand-built `{ data, meta }` is wrapped too: always go
 through `paginate()`. Add extra fields inside `meta` on the returned object
-(`page.meta.statusCounts = …`): a `{ ...page }` copy loses the marker.
+(`page.meta.statusCounts = …`) and return that object as is: **any copy loses the marker**
+(`{ ...page }`, `Object.assign`, `structuredClone`, class-transformer, `ClassSerializerInterceptor`)
+and the list comes out as `{ data: { data, meta } }`. Serialize the items *before* `paginate()`.
 
 ## Errors
 
