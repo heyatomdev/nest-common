@@ -55,6 +55,8 @@ async function bootstrap() {
     trustProxyHops: config.getOrThrow<number>('TRUST_PROXY_HOPS'),
     corsOrigins: parseCorsOrigins(config.get('CORS_ORIGINS')),
     corsAllowedHeaders: ['Idempotency-Key'], // custom headers the service really accepts
+    // X-Request-Id is always exposed to browsers; add the service's own response headers:
+    // corsExposedHeaders: ['X-Deploy-Color'],
     // jsonBodyLimit: '1mb',
   });
 
@@ -112,7 +114,7 @@ import { MetricsModule } from '@heyatom/nest-common/metrics';
       useFactory: (config: ConfigService) => ({
         app: 'herald',
         port: config.getOrThrow<number>('METRICS_PORT'), // default 9091
-        host: config.getOrThrow<string>('METRICS_HOST'), // default 0.0.0.0
+        host: config.get<string>('METRICS_HOST'), // unset = :: (dual-stack)
       }),
     }),
   ],
@@ -124,12 +126,16 @@ import { MetricsModule } from '@heyatom/nest-common/metrics';
 export class AppModule {}
 ```
 
-Services whose URLs carry tokens keep their own `req` serializer:
+Request lines carry `req.{id, method, url, remoteAddress}` and `res.statusCode`, never headers:
+pino-http's standard serializer logs every request header, the caller's raw `X-Request-Id`
+included. Services whose URLs carry tokens pass their own `req` serializer:
 
 ```ts
-const params = loggerParams({ service: 'beacon', level });
-return { pinoHttp: { ...params.pinoHttp, serializers: { req: requestLogSerializer } } };
+loggerParams({ service: 'beacon', level, serializers: { req: requestLogSerializer } });
 ```
+
+The return type narrows `pinoHttp` to the options object, so `{ ...params.pinoHttp, … }` needs
+no cast.
 
 ### Request id
 

@@ -183,6 +183,13 @@ i probe nel histogram. Si corregge adottando il package (fase 2).
 ### What would change it
 —
 
+### Revisione 2026-10-15 — host di default
+
+Gatherly ha notato che `host: '0.0.0.0'` di default faceva ascoltare il server solo su IPv4,
+mentre prima i servizi, con `listen(port)`, ascoltavano su `::`. Ora l'host di default non è
+impostato e Node usa `::` (dual-stack). `METRICS_HOST` resta disponibile per legare il server a
+un'interfaccia precisa.
+
 ## D-006 · HealthModule — DROPPED
 
 **Date**: 2026-10-15 · **Reference**: api.md §6
@@ -234,6 +241,23 @@ Bug 0.5, 0.6, 0.8; 9 varianti di config.
 ### What would change it
 Tracing distribuito (OpenTelemetry): il request-id diventa il trace id.
 
+### Revisione 2026-10-15 — serializer e tipo di ritorno
+
+Adottando il package in gatherly sono emersi due problemi.
+- Senza serializer custom, pino-http logga tutti gli header della richiesta, compreso
+  l'`X-Request-Id` grezzo del client: la validazione di `clientRequestId` non serviva a niente.
+- `Params` tipizza `pinoHttp` come un'unione, quindi lo spread suggerito dal README richiedeva un
+  cast.
+
+La decisione:
+- I serializer di default sono minimi: `req.{id, method, url, remoteAddress}` e
+  `res.statusCode`, senza header, query né body.
+- `serializers` è un'opzione di `loggerParams` per sostituirli (sanitizer degli URL di bastion,
+  beacon e fileharbor).
+- Il tipo di ritorno è `LoggerParams`, con `pinoHttp` ristretto alle opzioni. Il tipo si ricava
+  da `Params`, senza importare pino-http.
+- `REDACTED_PATHS` resta, e si applica a quello che un serializer custom tiene.
+
 ## D-008 · `setupHttpApp()` minimo — TAKEN
 
 **Date**: 2026-10-15 · **Reference**: api.md §8, piano 01 bug 0.2, 0.2b, 0.7, 0.11
@@ -254,6 +278,12 @@ Bug comuni a 7 servizi.
 
 ### What would change it
 —
+
+### Revisione 2026-10-15 — `exposedHeaders`
+
+Il CORS non esponeva `X-Request-Id`, quindi un frontend nel browser non poteva leggerlo per
+citarlo in una segnalazione. Ora `exposedHeaders` contiene sempre `X-Request-Id`, più
+`corsExposedHeaders` per gli header del servizio (dbdbuilds `X-Deploy-Color`).
 
 ## D-009 · Idempotency interceptor — DEFERRED
 

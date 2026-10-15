@@ -122,6 +122,61 @@ describe('loggerParams', () => {
   });
 });
 
+describe('loggerParams serializers', () => {
+  it('logs no request or response headers by default (the raw X-Request-Id included)', async () => {
+    const { default: pinoHttp } = await import('pino-http');
+    const { PassThrough } = await import('node:stream');
+    const { createServer } = await import('node:http');
+    const lines: string[] = [];
+    const sink = new PassThrough();
+    sink.on('data', (chunk: Buffer) => lines.push(chunk.toString()));
+    const { transport: _t, ...opts } = loggerParams({ service: 'svc', level: 'info' }).pinoHttp;
+    const log = pinoHttp(opts as never, sink);
+    const server = createServer((req, res) => {
+      log(req, res);
+      res.setHeader('Set-Cookie', 'sid=secret');
+      res.end('ok');
+    });
+    await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
+    const { port } = server.address() as { port: number };
+    await fetch(`http://127.0.0.1:${port}/events?token=x`, {
+      headers: { 'X-Request-Id': '<script>', Cookie: 'sid=1', 'X-Custom': 'leak' },
+    });
+    await new Promise((ok) => setTimeout(ok, 50));
+    server.close();
+    const line = JSON.parse(lines.join('').trim().split('\n').pop()!) as {
+      req: Record<string, unknown>;
+      res: Record<string, unknown>;
+      service: string;
+    };
+    expect(Object.keys(line.req).sort()).toEqual(['id', 'method', 'remoteAddress', 'url']);
+    expect(line.res).toEqual({ statusCode: 200 });
+    expect(line.service).toBe('svc');
+    expect(lines.join('')).not.toContain('<script>');
+    expect(lines.join('')).not.toContain('leak');
+  });
+
+  it('uses the serializers passed in, and spreads without a cast', () => {
+    const req = (r: { url?: string }) => ({ url: r.url?.split('?')[0] });
+    const params = loggerParams({ service: 'svc', level: 'info', serializers: { req } });
+    const custom = { ...params.pinoHttp, serializers: { ...params.pinoHttp.serializers, res: () => ({}) } };
+    expect(params.pinoHttp.serializers?.req).toBe(req);
+    expect(custom.serializers.res).toBeTypeOf('function');
+  });
+});
+
+describe('MetricsServer host', () => {
+  it('listens on :: (dual-stack) when METRICS_HOST is unset', async () => {
+    const { MetricsServer, MetricsService } = await import('../src/metrics/index.js');
+    const opts = { app: 't', port: 0 };
+    const server = new MetricsServer(new MetricsService(opts), opts);
+    await server.onApplicationBootstrap();
+    const addr = (server as unknown as { server: { address(): { address: string } } }).server.address();
+    await server.onApplicationShutdown();
+    expect(addr.address).toBe('::');
+  });
+});
+
 describe('error mapping', () => {
   it('derives codes from the status (api.md §3 table)', () => {
     expect([400, 401, 403, 404, 409, 413, 422, 429, 500, 502, 503].map(defaultErrorCode)).toEqual([

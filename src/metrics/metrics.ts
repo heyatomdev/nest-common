@@ -19,7 +19,7 @@ export interface MetricsOptions {
   app: string;
   /** `METRICS_PORT`, default 9091. 0 picks a free port (tests). */
   port?: number;
-  /** `METRICS_HOST`, default `0.0.0.0` (container). */
+  /** `METRICS_HOST`. Default unset: Node listens on `::`, which also accepts IPv4 where dual-stack is on. */
   host?: string;
 }
 
@@ -113,7 +113,7 @@ export class MetricsServer implements OnApplicationBootstrap, OnApplicationShutd
 
   onApplicationBootstrap(): Promise<void> {
     const port = this.opts.port ?? 9091;
-    const host = this.opts.host ?? '0.0.0.0';
+    const host = this.opts.host;
     const server = createServer((req, res) => {
       if (req.method !== 'GET' || req.url !== '/metrics') {
         res.writeHead(404).end();
@@ -130,7 +130,7 @@ export class MetricsServer implements OnApplicationBootstrap, OnApplicationShutd
     this.server = server;
     return new Promise((resolve, reject) => {
       server.once('error', reject).listen(port, host, () => {
-        this.logger.log(`metrics listening on ${host}:${this.port}`);
+        this.logger.log(`metrics listening on ${host ?? '::'}:${this.port}`);
         resolve();
       });
     });

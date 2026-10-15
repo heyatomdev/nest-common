@@ -15,6 +15,8 @@ export interface HttpAppOptions {
   corsOrigins: string[];
   /** Custom headers the service accepts (`Idempotency-Key`, `X-API-Key`, …) on top of Content-Type/Authorization. */
   corsAllowedHeaders?: string[];
+  /** Response headers browsers may read, on top of `X-Request-Id` (e.g. `X-Deploy-Color`). */
+  corsExposedHeaders?: string[];
   /** JSON body limit, default `1mb`. */
   jsonBodyLimit?: string;
 }
@@ -44,6 +46,8 @@ export function setupHttpApp(app: NestExpressApplication, opts: HttpAppOptions):
       cb(null, !origin || origins.has(origin)),
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', ...(opts.corsAllowedHeaders ?? [])],
+    // Without it a browser client cannot read the id to quote it in a bug report.
+    exposedHeaders: ['X-Request-Id', ...(opts.corsExposedHeaders ?? [])],
     credentials: true,
   });
   app.useBodyParser('json', { limit: opts.jsonBodyLimit ?? '1mb' });

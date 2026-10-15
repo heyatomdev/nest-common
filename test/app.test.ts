@@ -284,6 +284,11 @@ describe('http setup', () => {
     expect(res.headers.get('access-control-allow-headers')).toContain('Idempotency-Key');
   });
 
+  it('lets browsers read X-Request-Id', async () => {
+    const res = await get('/item', { Origin: 'https://ok.test' });
+    expect(res.headers.get('access-control-expose-headers')).toContain('X-Request-Id');
+  });
+
   it('sets helmet headers', async () => {
     expect((await get('/item')).headers.get('x-content-type-options')).toBe('nosniff');
   });
