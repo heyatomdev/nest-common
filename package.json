@@ -1,0 +1,103 @@
+{
+  "name": "@heyatom/nest-common",
+  "version": "0.1.0",
+  "description": "Shared HTTP contract for HeyAtom NestJS services: pagination, envelope, errors, Swagger gate, request-id logging, metrics",
+  "license": "MIT",
+  "author": "Andrea Tombolato <hey@heyatom.dev> (https://heyatom.dev)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/heyatomdev/nest-common.git"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    },
+    "./metrics": {
+      "import": {
+        "types": "./dist/esm/metrics/index.d.ts",
+        "default": "./dist/esm/metrics/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/metrics/index.d.ts",
+        "default": "./dist/cjs/metrics/index.js"
+      }
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "metrics": [
+        "./dist/cjs/metrics/index.d.ts"
+      ],
+      "*": [
+        "./dist/cjs/index.d.ts"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.cjs.json && tsc -p tsconfig.esm.json && echo '{\"type\":\"module\"}' > dist/esm/package.json",
+    "test": "vitest run",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "pnpm lint && pnpm test && pnpm build && pnpm test:di",
+    "test:di": "node scripts/di-smoke.cjs"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "packageManager": "pnpm@10.14.0",
+  "peerDependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-express": "^11.0.0",
+    "@nestjs/swagger": "^11.0.0",
+    "@prometheus-io/client": "^0.16.0",
+    "class-transformer": "^0.5.0",
+    "class-validator": "^0.14.0 || ^0.15.0",
+    "helmet": "^8.0.0",
+    "nestjs-pino": "^4.0.0",
+    "reflect-metadata": "^0.2.0",
+    "rxjs": "^7.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@prometheus-io/client": {
+      "optional": true
+    },
+    "nestjs-pino": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@nestjs/common": "^11.2.7",
+    "@nestjs/core": "^11.2.7",
+    "@nestjs/platform-express": "^11.2.7",
+    "@nestjs/swagger": "^11.4.7",
+    "@prometheus-io/client": "^0.16.1",
+    "@swc/core": "^1.16.18",
+    "@types/node": "^25.9.9",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "express": "^5.3.0",
+    "helmet": "^8.3.0",
+    "nestjs-pino": "^4.6.1",
+    "pino": "^10.4.0",
+    "pino-http": "^11.0.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "typescript": "^5.9.3",
+    "unplugin-swc": "^2.0.0",
+    "vitest": "^3.2.7"
+  }
+}
