@@ -180,7 +180,9 @@ throw new ConflictException({ code: 'SLUG_TAKEN', message: 'Slug already in use'
 - `ValidationPipe` errors → `400 VALIDATION_FAILED`, `message: 'Validation failed'`, `errors: string[]`.
 - Extra fields of the exception body are kept (`errorType`, `logId`, …); Nest's `error` label is dropped.
   `retryAfterSeconds: number` also becomes a `Retry-After` header.
-- Prisma: `P2002`/`P2003` → 409 `CONFLICT`, `P2025` → 404 `NOT_FOUND`, any other → 500.
+- Prisma: `P2002` → 409 `CONFLICT` "Resource already exists"; `P2003` → 409 `CONFLICT`
+  "Related resource constraint failed" (raised on delete-in-use and on writes with an unknown
+  foreign key: check references first to answer 404); `P2025` → 404 `NOT_FOUND`; any other → 500.
 - Anything else → 500 `INTERNAL_ERROR`, generic message; the error and stack go to the log only.
 - `@NoTransform()` handlers keep the exception body as is (e.g. terminus' 503 with `details`).
   The flag reaches the filter through `TransformInterceptor`, so register both.
@@ -202,9 +204,12 @@ export class MailMetrics {
 ```
 
 `MetricsModule` is global and applies `MetricsMiddleware` to every route itself. The histogram `route` label is the Nest pattern (`/events/:id`),
-`unmatched` for unknown routes; `/health*` is not observed. `GET /metrics` is served on its own
-port, outside the Nest router: do not publish it from the container. A render is shared for 10 s,
-so DB-backed gauges (`collect()`) run at most once per window.
+`unmatched` for unknown routes; `/health*` is not observed. Requests are observed on `close`, so
+the ones the client abandoned (timeout, disconnect) are counted too, with `status="499"`.
+`GET /metrics` is served on its own port, outside the Nest router: do not publish it from the
+container. With `host` unset it listens on `::` (dual-stack), or `0.0.0.0` where IPv6 is off;
+the log line shows the real address. A render is shared for 10 s, so DB-backed gauges
+(`collect()`) run at most once per window.
 
 ## Outbound webhooks
 
@@ -212,7 +217,8 @@ No Nest dependency: `@heyatom/nest-common/webhooks` uses only Node built-ins.
 
 ```ts
 import {
-  assertPublicWebhookUrl, checkWebhookUrl, signStandardWebhook, webhookAgent, WebhookUrlError,
+  assertPublicWebhookUrl, checkWebhookUrl, isWebhookTargetBlocked, signStandardWebhook,
+  webhookAgent, WebhookUrlError,
 } from '@heyatom/nest-common/webhooks';
 
 // Save time (PATCH of the webhook URL): https only, no credentials, every DNS answer public.
@@ -222,8 +228,8 @@ try {
   if (err instanceof WebhookUrlError) {
     // `message` is safe for the caller: no host, and one text for "private" and "does not
     // resolve" (otherwise it is an oracle on internal DNS names). The detail goes to the log.
-    this.logger.warn(`webhook URL refused: ${err.reason}`);
-    throw new BadRequestException(err.message);
+    this.logger.warn(`webhook URL refused: ${err.reason}`); // `reason` is not enumerable: never in a body
+    throw new BadRequestException({ code: err.code, message: err.message }); // not `(err)` itself
   }
   throw err;
 }
@@ -237,12 +243,19 @@ const headers = signStandardWebhook({
   body,
   secrets: [target.secret, ...(target.previousSecret ? [target.previousSecret] : [])],
 });
-await this.http.post(target.url, body, {
-  headers: { ...headers, 'Content-Type': 'application/json' },
-  httpsAgent: webhookAgent, // every connection resolves through the same public-only rule
-  maxRedirects: 0,
-  timeout: 10_000,
-});
+try {
+  await this.http.post(target.url, body, {
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    httpsAgent: webhookAgent, // every connection resolves through the same public-only rule
+    maxRedirects: 0,
+    timeout: 10_000,
+  });
+} catch (err) {
+  // The agent's refusal reaches you wrapped by axios (code WEBHOOK_TARGET_BLOCKED, cause =
+  // WebhookUrlError), not as a WebhookUrlError: `instanceof` alone would retry the scan.
+  if (isWebhookTargetBlocked(err)) return markFailed(delivery); // terminal
+  return scheduleRetry(delivery); // network errors, 5xx, timeouts
+}
 ```
 
 - Blocked: RFC 1918, loopback, CGNAT, link-local and cloud metadata (`169.254.169.254`),

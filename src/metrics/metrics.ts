@@ -69,11 +69,14 @@ export class MetricsMiddleware implements NestMiddleware {
     // catch-all here and stays so when no controller matches.
     const mountRoute = req.route;
     const start = process.hrtime.bigint();
-    res.on('finish', () => {
+    // 'close', not 'finish': it also fires when the client gives up (timeout, disconnect),
+    // which are the slow requests this histogram is for. Those are labelled 499, as nginx does.
+    res.once('close', () => {
       const matched = req.route;
       const route = (matched !== mountRoute ? matched?.path : undefined) ?? 'unmatched';
+      const status = res.writableFinished ? String(res.statusCode) : '499';
       this.metrics.httpRequestDuration.observe(
-        { method: req.method ?? 'UNKNOWN', route, status: String(res.statusCode) },
+        { method: req.method ?? 'UNKNOWN', route, status },
         Number(process.hrtime.bigint() - start) / 1e9,
       );
     });
@@ -130,7 +133,9 @@ export class MetricsServer implements OnApplicationBootstrap, OnApplicationShutd
     this.server = server;
     return new Promise((resolve, reject) => {
       server.once('error', reject).listen(port, host, () => {
-        this.logger.log(`metrics listening on ${host ?? '::'}:${this.port}`);
+        // The real address: with host unset Node falls back to 0.0.0.0 on a host without IPv6.
+        const addr = server.address();
+        this.logger.log(`metrics listening on ${typeof addr === 'object' && addr ? `${addr.address}:${addr.port}` : String(addr)}`);
         resolve();
       });
     });

@@ -78,10 +78,27 @@ const MESSAGES: Record<WebhookUrlReason, string> = {
  */
 export class WebhookUrlError extends Error {
   readonly code = 'WEBHOOK_TARGET_BLOCKED';
-  constructor(readonly reason: WebhookUrlReason) {
-    super(`webhook target blocked: ${MESSAGES[reason]}`);
+  declare readonly reason: WebhookUrlReason;
+  constructor(reason: WebhookUrlReason, options?: { cause?: unknown }) {
+    super(`webhook target blocked: ${MESSAGES[reason]}`, options);
     this.name = 'WebhookUrlError';
+    // Not enumerable: `new BadRequestException(err)` or a spread must not put the reason in a
+    // response body, where DNS_UNRESOLVED vs DNS_NON_PUBLIC would reopen the DNS oracle.
+    Object.defineProperty(this, 'reason', { value: reason, enumerable: false });
   }
+}
+
+/**
+ * True for a refused target however it surfaces. At send time the error is raised inside the
+ * socket's `lookup`, so axios / `@nestjs/axios` hand back their own error with
+ * `code: 'WEBHOOK_TARGET_BLOCKED'` and the `WebhookUrlError` as `cause`, not the error itself.
+ * Treat it as terminal: retrying a blocked address is the scan itself.
+ */
+export function isWebhookTargetBlocked(err: unknown): boolean {
+  for (let e = err, depth = 0; e && depth < 5; e = (e as { cause?: unknown }).cause, depth++) {
+    if (e instanceof WebhookUrlError || (e as { code?: unknown }).code === 'WEBHOOK_TARGET_BLOCKED') return true;
+  }
+  return false;
 }
 
 export interface WebhookUrlPolicy {
@@ -135,8 +152,9 @@ export async function resolvePublicAddresses(
   let addresses: LookupAddress[];
   try {
     addresses = await resolve(hostname, { all: true });
-  } catch {
-    throw new WebhookUrlError('DNS_UNRESOLVED');
+  } catch (err) {
+    // ENOTFOUND vs EAI_AGAIN/timeout stays in `cause`, for the operator's log only.
+    throw new WebhookUrlError('DNS_UNRESOLVED', { cause: err });
   }
   if (addresses.length === 0) throw new WebhookUrlError('DNS_UNRESOLVED');
   if (!policy.allowPrivate && !addresses.every((a) => isPublicAddress(a.address))) {

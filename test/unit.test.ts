@@ -27,6 +27,30 @@ describe('paginate', () => {
   it('has zero pages for an empty set', () => {
     expect(paginate([], 0, { page: 1, limit: 20 }).meta.totalPages).toBe(0);
   });
+
+  it('never yields Infinity (null in JSON) for limit 0', () => {
+    expect(paginate([], 5, { page: 1, limit: 0 }).meta.totalPages).toBe(0);
+  });
+});
+
+describe('AllExceptionsFilter outside HTTP', () => {
+  it('does not crash on a ws/rpc context', async () => {
+    const { AllExceptionsFilter } = await import('../src/exception.filter.js');
+    const host = { getType: () => 'rpc', switchToHttp: () => { throw new Error('not http'); } };
+    expect(() => new AllExceptionsFilter().catch(new Error('boom'), host as never)).not.toThrow();
+  });
+});
+
+describe('MetricsMiddleware', () => {
+  it('records requests the client abandoned, as 499', async () => {
+    const { EventEmitter } = await import('node:events');
+    const { MetricsMiddleware, MetricsService } = await import('../src/metrics/index.js');
+    const metrics = new MetricsService({ app: 't' });
+    const res = Object.assign(new EventEmitter(), { statusCode: 200, writableFinished: false });
+    new MetricsMiddleware(metrics).use({ method: 'GET', originalUrl: '/slow' } as never, res as never, () => {});
+    res.emit('close');
+    expect(await metrics.registry.metrics()).toMatch(/http_request_duration_seconds_count\{[^}]*status="499"[^}]*\} 1/);
+  });
 });
 
 describe('PageParams', () => {

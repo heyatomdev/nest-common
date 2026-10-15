@@ -6,6 +6,7 @@ import {
   assertPublicWebhookUrl,
   checkWebhookUrl,
   isPublicAddress,
+  isWebhookTargetBlocked,
   signStandardWebhook,
   webhookLookup,
   WebhookUrlError,
@@ -148,6 +149,39 @@ describe('webhookLookup', () => {
       req.end();
     });
     expect(err).toBeInstanceOf(WebhookUrlError);
+  });
+});
+
+describe('WebhookUrlError', () => {
+  it('keeps reason readable but out of keys and JSON, so it cannot leak into a response body', () => {
+    const err = new WebhookUrlError('DNS_UNRESOLVED');
+    expect(err.reason).toBe('DNS_UNRESOLVED');
+    expect(Object.keys(err)).not.toContain('reason');
+    expect(JSON.stringify({ ...err })).not.toContain('DNS_');
+  });
+
+  it('keeps the DNS failure as cause for the log', async () => {
+    const dnsErr = Object.assign(new Error('getaddrinfo ENOTFOUND x'), { code: 'ENOTFOUND' });
+    const err = await assertPublicWebhookUrl('https://x.test/', {}, () => Promise.reject(dnsErr)).catch((e: Error) => e);
+    expect(err).toMatchObject({ reason: 'DNS_UNRESOLVED' });
+    expect((err as Error).cause).toBe(dnsErr);
+    expect((err as Error).message).not.toContain('ENOTFOUND');
+  });
+});
+
+describe('isWebhookTargetBlocked', () => {
+  it('recognizes the error directly, wrapped by axios (code), or as cause', () => {
+    const blocked = new WebhookUrlError('DNS_NON_PUBLIC');
+    expect(isWebhookTargetBlocked(blocked)).toBe(true);
+    const axiosLike = Object.assign(new Error('webhook target blocked'), { code: 'WEBHOOK_TARGET_BLOCKED', cause: blocked });
+    expect(isWebhookTargetBlocked(axiosLike)).toBe(true);
+    expect(isWebhookTargetBlocked(new Error('outer', { cause: new Error('mid', { cause: blocked }) }))).toBe(true);
+  });
+
+  it('leaves network errors retryable', () => {
+    expect(isWebhookTargetBlocked(Object.assign(new Error('timeout'), { code: 'ECONNABORTED' }))).toBe(false);
+    expect(isWebhookTargetBlocked(undefined)).toBe(false);
+    expect(isWebhookTargetBlocked('x')).toBe(false);
   });
 });
 

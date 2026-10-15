@@ -212,7 +212,7 @@ describe('exception filter', () => {
 
   it('maps Prisma errors (P2002/P2003 → 409, P2025 → 404, others → 500)', async () => {
     expect((await json('/prisma/x')).body).toMatchObject({ statusCode: 409, code: 'CONFLICT' });
-    expect((await json('/p2003')).body).toMatchObject({ statusCode: 409, code: 'CONFLICT' });
+    expect((await json('/p2003')).body).toMatchObject({ statusCode: 409, code: 'CONFLICT', message: 'Related resource constraint failed' });
     expect((await json('/p2025')).body).toMatchObject({ statusCode: 404, code: 'NOT_FOUND' });
     expect((await json('/p9999')).body).toMatchObject({ statusCode: 500, code: 'INTERNAL_ERROR' });
   });

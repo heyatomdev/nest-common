@@ -66,7 +66,8 @@ export function paginate<T>(
       total,
       page: params.page,
       limit: params.limit,
-      totalPages: Math.ceil(total / params.limit),
+      // limit 0 can reach here from an unvalidated Pick: Infinity would serialize as null.
+      totalPages: params.limit > 0 ? Math.ceil(total / params.limit) : 0,
     },
   };
 }

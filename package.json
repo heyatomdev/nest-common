@@ -10,7 +10,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
@@ -85,37 +86,10 @@
     "rxjs": "^7.0.0"
   },
   "peerDependenciesMeta": {
-    "@nestjs/common": {
-      "optional": true
-    },
-    "@nestjs/core": {
-      "optional": true
-    },
-    "@nestjs/platform-express": {
-      "optional": true
-    },
-    "@nestjs/swagger": {
-      "optional": true
-    },
     "@prometheus-io/client": {
       "optional": true
     },
-    "class-transformer": {
-      "optional": true
-    },
-    "class-validator": {
-      "optional": true
-    },
-    "helmet": {
-      "optional": true
-    },
     "nestjs-pino": {
-      "optional": true
-    },
-    "reflect-metadata": {
-      "optional": true
-    },
-    "rxjs": {
       "optional": true
     }
   },

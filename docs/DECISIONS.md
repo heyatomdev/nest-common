@@ -458,3 +458,47 @@ dipendenza da Prisma.
 
 ### What would change it
 Prisma che rinomina la classe d'errore.
+
+## D-013 · Correzioni dalla review di Fable prima del rilascio — TAKEN
+
+**Date**: 2026-10-15 · **Reference**: review di Fable su `ff13e9e`, adozione in gatherly
+
+### The problem
+La review dei fix non ancora rilasciati ha trovato nove punti.
+1. I peer erano tutti `optional`, ma la root entry li carica all'import, e pnpm non installa i
+   peer opzionali. Un servizio senza `helmet` riceverebbe `Cannot find module` all'avvio, senza
+   alcun warning all'installazione.
+2. Al momento dell'invio, axios avvolge `WebhookUrlError`: `instanceof` non lo riconosce più e il
+   consumer ritenta l'invio, cioè ripete lo scan.
+3. Il messaggio di `P2003` ("still referenced") è falso sulle insert con una FK inesistente.
+4. `reason` era enumerabile: `new BadRequestException(err)` lo avrebbe messo nel body, e l'oracolo
+   DNS si sarebbe riaperto. In più la causa DNS (`ENOTFOUND` vs `EAI_AGAIN`) andava persa.
+5. Il log del server metriche diceva `::` anche dopo il fallback su `0.0.0.0`.
+6. Le metriche osservavano solo `finish`, quindi le richieste abbandonate dal client non
+   venivano contate.
+7. Il filter non controllava il tipo di contesto: con ws/rpc `switchToHttp()` esplode.
+8. Con `limit: 0`, `paginate` produceva `totalPages: Infinity`, che in JSON diventa `null`.
+9. Il package è dichiarato MIT ma il file `LICENSE` mancava.
+
+### The decision
+1. I peer della root sono obbligatori; restano opzionali solo `nestjs-pino`, usato solo per i
+   tipi, e `@prometheus-io/client`, che serve solo a `/metrics`.
+2. Nuovo `isWebhookTargetBlocked(err)`: riconosce l'errore se è un `WebhookUrlError`, se ha
+   `code: 'WEBHOOK_TARGET_BLOCKED'` o se lo ha nella catena di `cause`. La guida lo usa come
+   condizione terminale.
+3. Il messaggio di `P2003` diventa "Related resource constraint failed".
+4. `reason` è non enumerabile, e l'errore DNS originale finisce in `cause`.
+5. Il log riporta `server.address()`.
+6. L'osservazione avviene su `close`; le richieste abbandonate vengono contate con
+   `status="499"`.
+7. Fuori da HTTP il filter logga e ritorna (`ponytail`: un ramo per trasporto quando servirà).
+8. Con `limit <= 0`, `totalPages` vale `0`.
+9. Aggiunto il file `LICENSE`, incluso in `files`.
+
+### On what data
+Review di Fable (smoke ESM/CJS e DI, pino-http reale, richiesta HTTP reale per il lookup) e
+la catch di gatherly in `webhook.service.ts`, che ritentava le consegne bloccate.
+
+### What would change it
+Un consumer che importa solo `/webhooks` senza Nest: in quel caso i peer della root tornano
+`optional`, con un controllo esplicito all'import.

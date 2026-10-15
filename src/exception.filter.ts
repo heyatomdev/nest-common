@@ -27,7 +27,8 @@ export function defaultErrorCode(status: number): string {
 /** Prisma known-request errors mapped once for every service (api.md §3). */
 const PRISMA_STATUS: Record<string, { status: number; code: string; message: string }> = {
   P2002: { status: 409, code: 'CONFLICT', message: 'Resource already exists' },
-  P2003: { status: 409, code: 'CONFLICT', message: 'Resource is still referenced' },
+  // Also raised on insert/update with an unknown foreign key, not only on delete-in-use.
+  P2003: { status: 409, code: 'CONFLICT', message: 'Related resource constraint failed' },
   P2025: { status: 404, code: 'NOT_FOUND', message: 'Resource not found' },
 };
 
@@ -63,6 +64,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
 
   catch(exception: unknown, host: ArgumentsHost): void {
+    // ponytail: HTTP only, no service has ws/rpc today; add a per-transport branch when one does.
+    if (host.getType() !== 'http') {
+      this.logger.error(`unhandled ${host.getType()} exception`, exception instanceof Error ? exception.stack : String(exception));
+      return;
+    }
     const http = host.switchToHttp();
     const req = http.getRequest<Req>();
     const res = http.getResponse<Res>();
