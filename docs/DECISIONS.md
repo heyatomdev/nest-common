@@ -32,7 +32,7 @@ Regole di partenza:
 | D-007 | `loggerParams()` + request-id | Dentro | root |
 | D-008 | `setupHttpApp()` | Dentro (minimo) | root |
 | D-009 | Idempotency interceptor | Più avanti | — |
-| D-010 | Webhook in uscita: guard SSRF + firma Standard Webhooks | Dentro dalla 0.2.0 (revisione 2026-10-15) | `/webhooks` |
+| D-010 | Webhook in uscita: guard SSRF + firma Standard Webhooks | Dentro dalla 0.1.0 (revisione 2026-10-15) | `/webhooks` |
 | D-011 | Throttler guard per utente | Fuori | — |
 | D-012 | Niente Prisma tra le peer dependency | Presa | — |
 
@@ -293,7 +293,7 @@ esistente. I riceventi (dbdbuilds-api) devono poter verificare senza dipendere d
 ### What would change it
 —
 
-### Revisione 2026-10-15 — TAKEN (0.2.0)
+### Revisione 2026-10-15 — TAKEN (0.1.0)
 
 **Date**: 2026-10-15 · **Reference**: api.md §13, richiesta della sessione di analisi approvata dall'utente
 

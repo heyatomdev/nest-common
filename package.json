@@ -1,6 +1,6 @@
 {
   "name": "@heyatom/nest-common",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Shared runtime for HeyAtom NestJS services: pagination, envelope, errors, Swagger gate, request-id logging, metrics, outbound webhooks",
   "license": "MIT",
   "author": "Andrea Tombolato <hey@heyatom.dev> (https://heyatom.dev)",
@@ -112,5 +112,8 @@
     "typescript": "^5.9.3",
     "unplugin-swc": "^2.0.0",
     "vitest": "^3.2.7"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
