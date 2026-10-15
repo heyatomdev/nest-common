@@ -371,6 +371,27 @@ gatherly, nessun servizio ha destinatari solo NAT64.
 Un consumer che richiede chiavi `whsec_` base64 (spec Standard Webhooks completa): si aggiunge
 una codifica del secret senza rompere il test vector.
 
+### Revisione 2026-10-15 (2) — dopo l'adozione in gatherly
+
+**Il problema.** Il primo consumer reale, gatherly, ha fatto emergere tre cose.
+- `WebhookUrlError` metteva l'host nel `message` e distingueva "resolves to a non-public address"
+  da "does not resolve". Un admin di tenant poteva così scoprire quali nomi interni esistono
+  (`postgres`, `bastion`…): un oracolo sul DNS interno.
+- Il motivo del rifiuto non era disponibile come campo, quindi il servizio non poteva loggarlo
+  né mappare i messaggi senza confrontare stringhe.
+- I peer della root entry erano obbligatori, quindi chi importa solo `/webhooks` riceveva
+  warning su `@nestjs/*` e `helmet`.
+
+**La decisione.**
+- `WebhookUrlError.reason` vale `INVALID_URL | NOT_HTTPS | CREDENTIALS_IN_URL |
+  NON_PUBLIC_ADDRESS | DNS_NON_PUBLIC | DNS_UNRESOLVED`, ed è quello che finisce nel log.
+- `message` non contiene mai l'host. I tre motivi legati all'indirizzo hanno lo stesso testo
+  ("target is not publicly reachable"), quindi il `message` si può restituire al chiamante così
+  com'è.
+- Tutti i peer sono `optional`; il README dice quali servono per ogni entry point.
+
+Rilascio insieme ai fix trovati adottando il package negli altri servizi.
+
 ## D-011 · Throttler guard per utente — DROPPED
 
 **Date**: 2026-10-15 · **Reference**: api.md §8

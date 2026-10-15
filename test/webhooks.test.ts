@@ -52,18 +52,27 @@ describe('checkWebhookUrl', () => {
     ['ftp://hooks.example.com/x', 'only https'],
     ['https://user:pass@hooks.example.com/x', 'credentials'],
     ['https://hooks.example.com@127.0.0.1/x', 'credentials'],
-    ['https://localhost/x', 'not publicly routable'],
-    ['https://api.localhost/x', 'not publicly routable'],
-    ['https://127.0.0.1/x', 'not publicly routable'],
-    ['https://169.254.169.254/latest/meta-data', 'not publicly routable'],
-    ['https://[::1]/x', 'not publicly routable'],
-    ['https://[::ffff:10.0.0.1]/x', 'not publicly routable'],
-    ['https://[64:ff9b::a00:1]/x', 'not publicly routable'],
-    ['https://0x7f000001/x', 'not publicly routable'], // WHATWG URL normalizes to 127.0.0.1
+    ['https://localhost/x', 'not publicly reachable'],
+    ['https://api.localhost/x', 'not publicly reachable'],
+    ['https://127.0.0.1/x', 'not publicly reachable'],
+    ['https://169.254.169.254/latest/meta-data', 'not publicly reachable'],
+    ['https://[::1]/x', 'not publicly reachable'],
+    ['https://[::ffff:10.0.0.1]/x', 'not publicly reachable'],
+    ['https://[64:ff9b::a00:1]/x', 'not publicly reachable'],
+    ['https://0x7f000001/x', 'not publicly reachable'], // WHATWG URL normalizes to 127.0.0.1
     ['not a url', 'invalid URL'],
   ])('refuses %s', (url, reason) => {
     expect(() => checkWebhookUrl(url)).toThrow(WebhookUrlError);
     expect(() => checkWebhookUrl(url)).toThrow(reason);
+  });
+
+  it.each([
+    ['http://hooks.example.com/', 'NOT_HTTPS'],
+    ['https://u:p@hooks.example.com/', 'CREDENTIALS_IN_URL'],
+    ['https://127.0.0.1/', 'NON_PUBLIC_ADDRESS'],
+    ['nope', 'INVALID_URL'],
+  ])('tags %s with reason %s', (url, reason) => {
+    expect(() => checkWebhookUrl(url)).toThrow(expect.objectContaining({ reason, code: 'WEBHOOK_TARGET_BLOCKED' }));
   });
 
   it('accepts a public https URL', () => {
@@ -94,13 +103,27 @@ describe('assertPublicWebhookUrl', () => {
   it.each([['mixed.test'], ['mixed6.test'], ['metadata.test'], ['mapped.test']])(
     'refuses %s (at least one non-public address)',
     async (host) => {
-      await expect(assertPublicWebhookUrl(`https://${host}/hook`, {}, resolve)).rejects.toThrow('non-public');
+      await expect(assertPublicWebhookUrl(`https://${host}/hook`, {}, resolve)).rejects.toMatchObject({
+        reason: 'DNS_NON_PUBLIC',
+      });
     },
   );
 
   it('refuses a host that does not resolve or resolves to nothing', async () => {
-    await expect(assertPublicWebhookUrl('https://nope.test/', {}, resolve)).rejects.toThrow('does not resolve');
-    await expect(assertPublicWebhookUrl('https://empty.test/', {}, resolve)).rejects.toThrow('does not resolve');
+    await expect(assertPublicWebhookUrl('https://nope.test/', {}, resolve)).rejects.toMatchObject({ reason: 'DNS_UNRESOLVED' });
+    await expect(assertPublicWebhookUrl('https://empty.test/', {}, resolve)).rejects.toMatchObject({ reason: 'DNS_UNRESOLVED' });
+  });
+
+  it('gives the caller no DNS oracle: same message for private and unresolved, host never named', async () => {
+    const msgs = await Promise.all(
+      ['https://nope.test/', 'https://empty.test/', 'https://metadata.test/', 'https://localhost/', 'https://10.0.0.1/'].map((u) =>
+        assertPublicWebhookUrl(u, {}, resolve).then(
+          () => 'accepted',
+          (e: Error) => e.message,
+        ),
+      ),
+    );
+    expect(new Set(msgs)).toEqual(new Set(['webhook target blocked: target is not publicly reachable']));
   });
 
   it('runs the textual checks first', async () => {

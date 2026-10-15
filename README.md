@@ -22,11 +22,17 @@ throttler guards) and why: [`docs/DECISIONS.md`](docs/DECISIONS.md). `@Public()`
 live in `@heyatom/bastion-client`; verifying webhooks received from the platform belongs to
 `@heyatom/client`.
 
-Ships CJS and ESM. Node ≥ 20.19. Peer deps: `@nestjs/common`, `@nestjs/core`,
-`@nestjs/platform-express`, `@nestjs/swagger`, `class-validator`, `class-transformer`, `helmet`,
-`rxjs`, `reflect-metadata`; optional `nestjs-pino` (for `loggerParams`) and
-`@prometheus-io/client` (for `/metrics`). No Prisma dependency: Prisma errors are recognized by
-`name` + `code`, since every service generates its own client.
+Ships CJS and ESM. Node ≥ 20.19. Every peer dependency is marked optional, because each entry
+point needs a different set; install the ones for the entry points you import:
+
+| Entry point | Peer deps |
+|---|---|
+| `@heyatom/nest-common` | `@nestjs/common`, `@nestjs/core`, `@nestjs/platform-express`, `@nestjs/swagger`, `class-validator`, `class-transformer`, `helmet`, `rxjs`, `reflect-metadata`, `nestjs-pino` |
+| `@heyatom/nest-common/metrics` | `@nestjs/common`, `@prometheus-io/client` |
+| `@heyatom/nest-common/webhooks` | none (Node built-ins only) |
+
+No Prisma dependency: Prisma errors are recognized by `name` + `code`, since every service
+generates its own client.
 
 ## Bootstrap
 
@@ -213,7 +219,12 @@ import {
 try {
   await assertPublicWebhookUrl(dto.webhookUrl);
 } catch (err) {
-  if (err instanceof WebhookUrlError) throw new BadRequestException(err.message);
+  if (err instanceof WebhookUrlError) {
+    // `message` is safe for the caller: no host, and one text for "private" and "does not
+    // resolve" (otherwise it is an oracle on internal DNS names). The detail goes to the log.
+    this.logger.warn(`webhook URL refused: ${err.reason}`);
+    throw new BadRequestException(err.message);
+  }
   throw err;
 }
 

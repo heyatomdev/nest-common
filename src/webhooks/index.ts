@@ -51,11 +51,35 @@ export function isPublicAddress(address: string): boolean {
   return family !== 0 && !NON_PUBLIC.check(address, family === 6 ? 'ipv6' : 'ipv4');
 }
 
-/** Refused target. Terminal for a delivery loop: retrying a blocked address is the scan itself. */
+/** Why a target was refused. For logs and metrics; the client sees only `message`. */
+export type WebhookUrlReason =
+  | 'INVALID_URL'
+  | 'NOT_HTTPS'
+  | 'CREDENTIALS_IN_URL'
+  | 'NON_PUBLIC_ADDRESS'
+  | 'DNS_NON_PUBLIC'
+  | 'DNS_UNRESOLVED';
+
+// The URL's author sees `message`. The three address reasons share one text and none
+// names the host: "resolves to a private address" vs "does not resolve" would let a
+// tenant admin probe which internal names (postgres, bastion…) exist.
+const MESSAGES: Record<WebhookUrlReason, string> = {
+  INVALID_URL: 'invalid URL',
+  NOT_HTTPS: 'only https:// targets are allowed',
+  CREDENTIALS_IN_URL: 'credentials in URL are not allowed',
+  NON_PUBLIC_ADDRESS: 'target is not publicly reachable',
+  DNS_NON_PUBLIC: 'target is not publicly reachable',
+  DNS_UNRESOLVED: 'target is not publicly reachable',
+};
+
+/**
+ * Refused target. Terminal for a delivery loop: retrying a blocked address is the scan itself.
+ * `message` is safe to return to the caller as is; log `reason` (and the host) server-side.
+ */
 export class WebhookUrlError extends Error {
   readonly code = 'WEBHOOK_TARGET_BLOCKED';
-  constructor(reason: string) {
-    super(`webhook target blocked: ${reason}`);
+  constructor(readonly reason: WebhookUrlReason) {
+    super(`webhook target blocked: ${MESSAGES[reason]}`);
     this.name = 'WebhookUrlError';
   }
 }
@@ -78,18 +102,18 @@ export function checkWebhookUrl(raw: string, policy: WebhookUrlPolicy = {}): URL
   try {
     url = new URL(raw);
   } catch {
-    throw new WebhookUrlError('invalid URL');
+    throw new WebhookUrlError('INVALID_URL');
   }
   if (url.protocol !== 'https:' && !(policy.allowPrivate && url.protocol === 'http:')) {
-    throw new WebhookUrlError('only https:// targets are allowed');
+    throw new WebhookUrlError('NOT_HTTPS');
   }
   // `https://evil.com@127.0.0.1/`: the part before `@` is userinfo, not the host.
-  if (url.username || url.password) throw new WebhookUrlError('credentials in URL are not allowed');
+  if (url.username || url.password) throw new WebhookUrlError('CREDENTIALS_IN_URL');
   const host = bareHost(url);
-  if (!host) throw new WebhookUrlError('invalid URL');
+  if (!host) throw new WebhookUrlError('INVALID_URL');
   if (policy.allowPrivate) return url;
   if (host === 'localhost' || host.endsWith('.localhost') || (isIP(host) !== 0 && !isPublicAddress(host))) {
-    throw new WebhookUrlError('target address is not publicly routable');
+    throw new WebhookUrlError('NON_PUBLIC_ADDRESS');
   }
   return url;
 }
@@ -112,11 +136,11 @@ export async function resolvePublicAddresses(
   try {
     addresses = await resolve(hostname, { all: true });
   } catch {
-    throw new WebhookUrlError(`${hostname} does not resolve`);
+    throw new WebhookUrlError('DNS_UNRESOLVED');
   }
-  if (addresses.length === 0) throw new WebhookUrlError(`${hostname} does not resolve`);
+  if (addresses.length === 0) throw new WebhookUrlError('DNS_UNRESOLVED');
   if (!policy.allowPrivate && !addresses.every((a) => isPublicAddress(a.address))) {
-    throw new WebhookUrlError(`${hostname} resolves to a non-public address`);
+    throw new WebhookUrlError('DNS_NON_PUBLIC');
   }
   return addresses;
 }
