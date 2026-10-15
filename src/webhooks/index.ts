@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { lookup as dnsLookup, type LookupAddress, type LookupOptions } from 'node:dns';
-import { Agent } from 'node:https';
+import { request as httpRequest } from 'node:http';
+import { Agent, request as httpsRequest } from 'node:https';
 import { BlockList, isIP } from 'node:net';
 
 /*
@@ -58,9 +59,10 @@ export type WebhookUrlReason =
   | 'CREDENTIALS_IN_URL'
   | 'NON_PUBLIC_ADDRESS'
   | 'DNS_NON_PUBLIC'
-  | 'DNS_UNRESOLVED';
+  | 'DNS_UNRESOLVED'
+  | 'DNS_TRANSIENT';
 
-// The URL's author sees `message`. The three address reasons share one text and none
+// The URL's author sees `message`. The address reasons share one text and none
 // names the host: "resolves to a private address" vs "does not resolve" would let a
 // tenant admin probe which internal names (postgres, bastion…) exist.
 const MESSAGES: Record<WebhookUrlReason, string> = {
@@ -70,10 +72,13 @@ const MESSAGES: Record<WebhookUrlReason, string> = {
   NON_PUBLIC_ADDRESS: 'target is not publicly reachable',
   DNS_NON_PUBLIC: 'target is not publicly reachable',
   DNS_UNRESOLVED: 'target is not publicly reachable',
+  DNS_TRANSIENT: 'target is not publicly reachable',
 };
 
 /**
- * Refused target. Terminal for a delivery loop: retrying a blocked address is the scan itself.
+ * Refused target. Terminal for a delivery loop (retrying a blocked address is the scan itself),
+ * except `DNS_TRANSIENT` (resolver hiccup, no verdict on the target): retry with backoff.
+ * `DNS_UNRESOLVED` / `DNS_NON_PUBLIC` never opened a socket.
  * `message` is safe to return to the caller as is; log `reason` (and the host) server-side.
  */
 export class WebhookUrlError extends Error {
@@ -92,13 +97,17 @@ export class WebhookUrlError extends Error {
  * True for a refused target however it surfaces. At send time the error is raised inside the
  * socket's `lookup`, so axios / `@nestjs/axios` hand back their own error with
  * `code: 'WEBHOOK_TARGET_BLOCKED'` and the `WebhookUrlError` as `cause`, not the error itself.
- * Treat it as terminal: retrying a blocked address is the scan itself.
+ * Terminal (retrying a blocked address is the scan itself) except `DNS_TRANSIENT`, which is false:
+ * retry with backoff.
  */
 export function isWebhookTargetBlocked(err: unknown): boolean {
+  let coded = false;
   for (let e = err, depth = 0; e && depth < 5; e = (e as { cause?: unknown }).cause, depth++) {
-    if (e instanceof WebhookUrlError || (e as { code?: unknown }).code === 'WEBHOOK_TARGET_BLOCKED') return true;
+    // The wrapper carries the code too, so the typed error deeper in the chain decides first.
+    if (e instanceof WebhookUrlError) return e.reason !== 'DNS_TRANSIENT';
+    if ((e as { code?: unknown }).code === 'WEBHOOK_TARGET_BLOCKED') coded = true;
   }
-  return false;
+  return coded;
 }
 
 export interface WebhookUrlPolicy {
@@ -135,6 +144,9 @@ export function checkWebhookUrl(raw: string, policy: WebhookUrlPolicy = {}): URL
   return url;
 }
 
+// getaddrinfo EAI_AGAIN plus c-ares (dns.TIMEOUT, dns.SERVFAIL, dns.CONNREFUSED) codes.
+const TRANSIENT_DNS = new Set(['EAI_AGAIN', 'ETIMEOUT', 'ETIMEDOUT', 'ESERVFAIL', 'ECONNREFUSED']);
+
 type LookupFn = (hostname: string, options: { all: true }) => Promise<LookupAddress[]>;
 
 const systemLookup: LookupFn = (hostname, options) =>
@@ -153,8 +165,11 @@ export async function resolvePublicAddresses(
   try {
     addresses = await resolve(hostname, { all: true });
   } catch (err) {
-    // ENOTFOUND vs EAI_AGAIN/timeout stays in `cause`, for the operator's log only.
-    throw new WebhookUrlError('DNS_UNRESOLVED', { cause: err });
+    // The exact code stays in `cause`, for the operator's log only.
+    const code = (err as { code?: unknown })?.code;
+    throw new WebhookUrlError(typeof code === 'string' && TRANSIENT_DNS.has(code) ? 'DNS_TRANSIENT' : 'DNS_UNRESOLVED', {
+      cause: err,
+    });
   }
   if (addresses.length === 0) throw new WebhookUrlError('DNS_UNRESOLVED');
   if (!policy.allowPrivate && !addresses.every((a) => isPublicAddress(a.address))) {
@@ -182,9 +197,17 @@ type LookupCallback = (err: NodeJS.ErrnoException | null, address: string | Look
  */
 export function webhookLookup(policy: WebhookUrlPolicy = {}, resolve: LookupFn = systemLookup) {
   return (hostname: string, options: LookupOptions, callback: LookupCallback): void => {
+    // Resolve every family so the all-public check is complete, then filter by the requested
+    // one. `hints` and `verbatim` are ignored: the answer order is the resolver's.
+    const want = options?.family === 'IPv4' ? 4 : options?.family === 'IPv6' ? 6 : options?.family || 0;
     resolvePublicAddresses(hostname, policy, resolve).then(
-      (addresses) =>
-        options?.all ? callback(null, addresses) : callback(null, addresses[0].address, addresses[0].family),
+      (all) => {
+        const addresses = want ? all.filter((a) => a.family === want) : all;
+        if (addresses.length === 0) {
+          return callback(Object.assign(new Error(`getaddrinfo ENOTFOUND ${hostname}`), { code: 'ENOTFOUND' }), '');
+        }
+        options?.all ? callback(null, addresses) : callback(null, addresses[0].address, addresses[0].family);
+      },
       (err: NodeJS.ErrnoException) => callback(err, ''),
     );
   };
@@ -196,6 +219,56 @@ export function webhookLookup(policy: WebhookUrlPolicy = {}, resolve: LookupFn =
  * (literal IPs bypass `lookup`) and never follow redirects.
  */
 export const webhookAgent = new Agent({ lookup: webhookLookup() as never });
+
+const MAX_RESPONSE_BYTES = 64 * 1024;
+
+/**
+ * POST for `fetch` users (fetch cannot take an `https.Agent`). Same guarantees as `webhookAgent`:
+ * `checkWebhookUrl` first, DNS pinned through `webhookLookup`, no redirects (3xx is returned as
+ * `status`), response body capped at 64 KiB. Errors propagate as is: `isWebhookTargetBlocked(err)` works.
+ */
+export async function postWebhook(
+  url: string,
+  body: string,
+  headers: Record<string, string>,
+  opts: { timeoutMs?: number; policy?: WebhookUrlPolicy } = {},
+): Promise<{ status: number; body: string }> {
+  const target = checkWebhookUrl(url, opts.policy);
+  const send = target.protocol === 'http:' ? httpRequest : httpsRequest;
+  return new Promise((resolve, reject) => {
+    const req = send(
+      target,
+      {
+        method: 'POST',
+        headers: { ...headers, 'Content-Length': Buffer.byteLength(body) },
+        lookup: webhookLookup(opts.policy) as never,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        res.on('data', (c: Buffer) => {
+          if (size < MAX_RESPONSE_BYTES) chunks.push(c.subarray(0, MAX_RESPONSE_BYTES - size));
+          size += c.length; // keep draining so the socket frees up
+        });
+        res.on('end', () => {
+          clearTimeout(deadline);
+          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') });
+        });
+        res.on('error', reject);
+      },
+    );
+    // A total deadline, not `req.setTimeout` (idle only: a receiver dripping a byte at a time never trips it).
+    const deadline = setTimeout(
+      () => req.destroy(Object.assign(new Error('webhook timeout'), { code: 'ETIMEDOUT' })),
+      opts.timeoutMs ?? 10_000,
+    );
+    req.on('error', (err) => {
+      clearTimeout(deadline);
+      reject(err);
+    });
+    req.end(body);
+  });
+}
 
 export interface StandardWebhookInput {
   /** Delivery id, also inside the payload: receivers deduplicate on it. */

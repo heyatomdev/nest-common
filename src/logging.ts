@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Params } from 'nestjs-pino';
 
@@ -19,8 +20,11 @@ export function clientRequestId(header: string | string[] | undefined): string |
 /**
  * pino-http `genReqId`: always a server-generated UUID, also set as the
  * `X-Request-Id` response header (errors included: it is set before any handler runs).
+ * Reuses the id `setupHttpApp` assigned (`req.id`) before the body parser; never a header.
  */
-export function genReqId(_req: IncomingMessage, res: ServerResponse): string {
+export function genReqId(req: IncomingMessage, res: ServerResponse): string {
+  const existing = (req as { id?: unknown }).id;
+  if (typeof existing === 'string') return existing;
   const id = randomUUID();
   res.setHeader(REQUEST_ID_HEADER, id);
   return id;
@@ -49,13 +53,17 @@ export interface LoggerOptions {
    * URLs carrying tokens. pino-http hands them its standard serialized object (with `.raw`).
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pino-http's serialized shapes
-  serializers?: { req?: (req: any) => unknown; res?: (res: any) => unknown };
+  serializers?: { req?: (req: any) => unknown; res?: (res: any) => unknown; err?: (err: any) => unknown };
 }
 
 /** The `Options` member of nestjs-pino's `pinoHttp` union, without importing pino-http. */
 export type PinoHttpOptions = Exclude<NonNullable<Params['pinoHttp']>, unknown[] | { write: unknown }>;
 
-/** nestjs-pino `Params` with `pinoHttp` narrowed to options, so `{ ...params.pinoHttp }` spreads without a cast. */
+/**
+ * nestjs-pino `Params` with `pinoHttp` narrowed to options, so `{ ...params.pinoHttp }` spreads
+ * without a cast. For a destination stream (tests) build nestjs-pino's own `Params`:
+ * `{ pinoHttp: [params.pinoHttp, stream] }`.
+ */
 export type LoggerParams = Omit<Params, 'pinoHttp'> & { pinoHttp: PinoHttpOptions };
 
 interface SerializedReq {
@@ -88,6 +96,8 @@ export function loggerParams(opts: LoggerOptions): LoggerParams {
   return {
     pinoHttp: {
       level: opts.level,
+      // On every line, also outside requests (Bootstrap, MetricsServer…); replaces pino's default base.
+      base: { pid: process.pid, hostname: hostname(), service: opts.service },
       transport: opts.pretty
         ? { target: 'pino-pretty', options: { singleLine: true, colorize: true } }
         : undefined,
@@ -95,11 +105,12 @@ export function loggerParams(opts: LoggerOptions): LoggerParams {
       serializers: {
         req: opts.serializers?.req ?? minimalRequestSerializer,
         res: opts.serializers?.res ?? minimalResponseSerializer,
+        ...(opts.serializers?.err ? { err: opts.serializers.err } : {}),
       },
       genReqId,
       customProps: (req: IncomingMessage) => {
         const callerId = clientRequestId(req.headers['x-request-id']);
-        return callerId ? { service: opts.service, clientRequestId: callerId } : { service: opts.service };
+        return callerId ? { clientRequestId: callerId } : {};
       },
       // Prefix match: the routes are /health/live and /health/ready, an exact '/health' ignores nothing.
       autoLogging: { ignore: (req: IncomingMessage) => (req.url ?? '').startsWith('/health') },

@@ -1,12 +1,15 @@
 import { createHmac } from 'node:crypto';
 import type { LookupAddress } from 'node:dns';
-import { request } from 'node:http';
+import { createServer, request } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import {
   assertPublicWebhookUrl,
   checkWebhookUrl,
   isPublicAddress,
   isWebhookTargetBlocked,
+  postWebhook,
+  resolvePublicAddresses,
   signStandardWebhook,
   webhookLookup,
   WebhookUrlError,
@@ -217,5 +220,96 @@ describe('signStandardWebhook', () => {
 
   it('refuses to sign without a secret', () => {
     expect(() => signStandardWebhook({ ...vector, secrets: [] })).toThrow();
+  });
+});
+
+describe('DNS_TRANSIENT', () => {
+  const failing = (code: string) => async () => {
+    throw Object.assign(new Error(code), { code });
+  };
+
+  it.each(['EAI_AGAIN', 'ETIMEOUT', 'ESERVFAIL', 'ECONNREFUSED'])('%s is transient and retryable', async (code) => {
+    const err = await resolvePublicAddresses('a.test', {}, failing(code)).catch((e) => e);
+    expect(err).toBeInstanceOf(WebhookUrlError);
+    expect(err.reason).toBe('DNS_TRANSIENT');
+    expect(err.message).toBe(new WebhookUrlError('DNS_UNRESOLVED').message);
+    expect(isWebhookTargetBlocked(err)).toBe(false);
+    // axios shape: wrapper with the blocked code, cause = WebhookUrlError
+    expect(isWebhookTargetBlocked(Object.assign(new Error('x'), { code: 'WEBHOOK_TARGET_BLOCKED', cause: err }))).toBe(false);
+  });
+
+  it('ENOTFOUND stays terminal', async () => {
+    const err = await resolvePublicAddresses('a.test', {}, failing('ENOTFOUND')).catch((e) => e);
+    expect(err.reason).toBe('DNS_UNRESOLVED');
+    expect(isWebhookTargetBlocked(err)).toBe(true);
+  });
+});
+
+describe('webhookLookup family', () => {
+  const resolve = resolver({ 'dual.test': ['93.184.216.34', '2606:2800:220:1::1'] });
+  const run = (options: object) =>
+    new Promise<unknown[]>((ok) => webhookLookup({}, resolve)('dual.test', options, (...args) => ok(args)));
+
+  it('picks the requested family', async () => {
+    expect(await run({ family: 6 })).toEqual([null, '2606:2800:220:1::1', 6]);
+    expect(await run({ family: 'IPv4' })).toEqual([null, '93.184.216.34', 4]);
+    expect(await run({ family: 0 })).toEqual([null, '93.184.216.34', 4]);
+    expect(((await run({ family: 6, all: true }))[1] as LookupAddress[]).map((a) => a.family)).toEqual([6]);
+  });
+
+  it('ENOTFOUND when no address has the family', async () => {
+    const cb = await new Promise<unknown[]>((ok) =>
+      webhookLookup({}, resolver({ 'v4.test': ['93.184.216.34'] }))('v4.test', { family: 6 }, (...a) => ok(a)),
+    );
+    expect(cb[0]).toMatchObject({ code: 'ENOTFOUND' });
+  });
+});
+
+describe('postWebhook', () => {
+  const serve = async (handler: Parameters<typeof createServer>[1]) => {
+    const server = createServer(handler);
+    await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
+    return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/`, close: () => server.close() };
+  };
+
+  it('posts, returns status and body, does not follow redirects', async () => {
+    let seen = '';
+    const s = await serve((req, res) => {
+      req.on('data', (c) => (seen += c)).on('end', () => {
+        if (req.url === '/') res.writeHead(302, { location: '/next' }).end('moved');
+      });
+    });
+    try {
+      const r = await postWebhook(s.url, '{"a":1}', { 'content-type': 'application/json' }, { policy: { allowPrivate: true } });
+      expect(r).toEqual({ status: 302, body: 'moved' });
+      expect(seen).toBe('{"a":1}');
+    } finally {
+      s.close();
+    }
+  });
+
+  it('caps the response body', async () => {
+    const s = await serve((_req, res) => res.end('x'.repeat(200_000)));
+    try {
+      const r = await postWebhook(s.url, '', {}, { policy: { allowPrivate: true } });
+      expect(r.body.length).toBe(64 * 1024);
+    } finally {
+      s.close();
+    }
+  });
+
+  it('refuses a blocked target without policy', async () => {
+    const err = await postWebhook('https://127.0.0.1/', '{}', {}).catch((e) => e);
+    expect(isWebhookTargetBlocked(err)).toBe(true);
+  });
+
+  it('times out with ETIMEDOUT', async () => {
+    const s = await serve(() => undefined);
+    try {
+      const err = await postWebhook(s.url, '{}', {}, { timeoutMs: 50, policy: { allowPrivate: true } }).catch((e) => e);
+      expect(err.code).toBe('ETIMEDOUT');
+    } finally {
+      s.close();
+    }
   });
 });

@@ -5,11 +5,15 @@ import { DocumentBuilder, type OpenAPIObject, SwaggerModule } from '@nestjs/swag
  * Fail-closed Swagger gate (api.md §4): an explicit `ENABLE_SWAGGER` wins; otherwise
  * on only when `NODE_ENV` is explicitly `development` or `test`. Unset or unexpected
  * `NODE_ENV` → off. Call it in the config `validate()` to resolve the default once.
+ * `devEnvs` adds a service's own names (`['development', 'develop', 'test']`).
  */
-export function swaggerEnabled(env: { ENABLE_SWAGGER?: string | boolean; NODE_ENV?: string }): boolean {
+export function swaggerEnabled(
+  env: { ENABLE_SWAGGER?: string | boolean; NODE_ENV?: string },
+  devEnvs: readonly string[] = ['development', 'test'],
+): boolean {
   const explicit = env.ENABLE_SWAGGER;
   if (explicit !== undefined && explicit !== '') return explicit === true || explicit === 'true';
-  return env.NODE_ENV === 'development' || env.NODE_ENV === 'test';
+  return !!env.NODE_ENV && devEnvs.includes(env.NODE_ENV);
 }
 
 export interface SwaggerOptions {

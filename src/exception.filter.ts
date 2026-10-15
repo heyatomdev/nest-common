@@ -6,10 +6,13 @@ import {
   HttpStatus,
   Injectable,
   Logger,
+  SetMetadata,
+  UseFilters,
+  applyDecorators,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { REQUEST_ID_HEADER } from './logging.js';
-import { NO_TRANSFORM_REQUEST } from './transform.interceptor.js';
 
 /** Status codes whose `code` differs from the `HttpStatus` enum name (api.md §3). */
 const CODE_OVERRIDES: Record<number, string> = {
@@ -51,7 +54,25 @@ export interface ErrorBody {
   [extra: string]: unknown;
 }
 
-type Req = IncomingMessage & { id?: unknown; [NO_TRANSFORM_REQUEST]?: boolean };
+/**
+ * Set on the request by `TransformInterceptor` for `@NoTransform()` handlers. Kept for
+ * compatibility: `@NoTransform()` now carries its own scoped filter.
+ */
+export const NO_TRANSFORM_REQUEST = Symbol.for('@heyatom/nest-common/no-transform');
+
+type Req = IncomingMessage & { id?: unknown; route?: { path?: string }; [NO_TRANSFORM_REQUEST]?: boolean };
+
+/**
+ * http-errors shape (body-parser: malformed JSON 400, 413, 415, `request.aborted`). Duck-typed on
+ * `expose` + `statusCode === status`: a bare `status` would also match an `AxiosError`, whose
+ * status is the upstream's and must stay a 500.
+ */
+function httpErrorStatus(err: unknown): number | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const { expose, status, statusCode } = err as { expose?: unknown; status?: unknown; statusCode?: unknown };
+  if (typeof expose !== 'boolean' || typeof status !== 'number' || status !== statusCode) return undefined;
+  return status >= 400 && status < 500 ? status : undefined;
+}
 type Res = ServerResponse;
 
 /**
@@ -63,6 +84,9 @@ type Res = ServerResponse;
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
 
+  /** Set by `NoTransformExceptionFilter`: keep the `HttpException` body as is. */
+  protected readonly passThrough: boolean = false;
+
   catch(exception: unknown, host: ArgumentsHost): void {
     // ponytail: HTTP only, no service has ws/rpc today; add a per-transport branch when one does.
     if (host.getType() !== 'http') {
@@ -72,9 +96,15 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const http = host.switchToHttp();
     const req = http.getRequest<Req>();
     const res = http.getResponse<Res>();
-    const requestId = typeof req.id === 'string' ? req.id : (res.getHeader(REQUEST_ID_HEADER) as string | undefined);
+    let requestId = typeof req.id === 'string' ? req.id : (res.getHeader(REQUEST_ID_HEADER) as string | undefined);
+    // No `genReqId` wired (no `loggerParams`): still honour "requestId is always present".
+    if (!requestId) {
+      requestId = randomUUID();
+      if (!res.headersSent) res.setHeader(REQUEST_ID_HEADER, requestId);
+    }
 
-    const { status, body } = this.toResponse(exception, requestId, !!req[NO_TRANSFORM_REQUEST]);
+    const passThrough = this.passThrough || !!req[NO_TRANSFORM_REQUEST];
+    const { status, body } = this.toResponse(exception, requestId, passThrough);
     this.log(status, exception, req);
 
     if (res.headersSent) {
@@ -84,18 +114,29 @@ export class AllExceptionsFilter implements ExceptionFilter {
     res.statusCode = status;
     // herald and fileharbor put the delay in the exception body; the header is what clients read.
     const retryAfter = (body as { retryAfterSeconds?: unknown } | null)?.retryAfterSeconds;
-    if (typeof retryAfter === 'number') res.setHeader('Retry-After', String(retryAfter));
+    if (typeof retryAfter === 'number') {
+      res.setHeader('Retry-After', String(retryAfter));
+      // A normalized body is our own copy; a passed-through one is the exception's, left untouched.
+      if (!passThrough) delete (body as ErrorBody).retryAfterSeconds;
+    }
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.end(JSON.stringify(body));
   }
 
-  private toResponse(exception: unknown, requestId: string | undefined, noTransform: boolean) {
+  private toResponse(exception: unknown, requestId: string, passThrough: boolean) {
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
       const raw = exception.getResponse();
-      // @NoTransform() handlers (terminus 503 with `details`) keep their body; flag set by TransformInterceptor.
-      if (noTransform) return { status, body: raw };
+      // @NoTransform() handlers (terminus 503 with `details`) keep their body.
+      if (passThrough) return { status, body: raw };
       return { status, body: normalize(status, raw, requestId) };
+    }
+
+    const parserStatus = httpErrorStatus(exception);
+    if (parserStatus) {
+      const err = exception as Error & { expose: boolean };
+      const message = err.expose ? err.message : defaultMessage(parserStatus);
+      return { status: parserStatus, body: { statusCode: parserStatus, code: defaultErrorCode(parserStatus), message, requestId } };
     }
 
     const prismaCode = prismaErrorCode(exception);
@@ -111,9 +152,22 @@ export class AllExceptionsFilter implements ExceptionFilter {
   }
 
   private log(status: number, exception: unknown, req: Req): void {
-    const where = `${req.method} ${(req.url ?? '').split('?')[0]}`;
+    // The route pattern, like MetricsMiddleware: raw paths carry tokens (`/albums/shared/<token>`).
+    const where = `${req.method} ${req.route?.path ?? 'unmatched'}`;
     if (status >= 500) {
       const err = exception instanceof Error ? exception : new Error(String(exception));
+      // Deliberate unavailability (queue full, upstream down, `retryAfterSeconds`): no stack, no alert.
+      if (exception instanceof HttpException && (status === 502 || status === 503 || status === 504)) {
+        this.logger.warn(`${status} ${where}: ${err.message}`);
+        return;
+      }
+      // Prisma messages quote the whole invocation, arguments included (`passwordHash`…).
+      if (err.name.startsWith('PrismaClient')) {
+        const code = (err as { code?: unknown }).code;
+        const frames = (err.stack ?? '').split('\n').filter((l) => l.trimStart().startsWith('at ')).join('\n');
+        this.logger.error(`${status} ${where}: ${err.name}${typeof code === 'string' ? ` ${code}` : ''}`, frames);
+        return;
+      }
       this.logger.error(`${status} ${where}: ${err.message}`, err.stack);
     } else if (status === 401 || status === 403 || status === 429) {
       this.logger.warn(`${status} ${where}`);
@@ -121,17 +175,39 @@ export class AllExceptionsFilter implements ExceptionFilter {
   }
 }
 
+/**
+ * Handler/controller-scoped variant applied by `@NoTransform()`: also covers guard and pipe
+ * rejections (which run before any interceptor) and services without `TransformInterceptor`.
+ */
+@Catch()
+export class NoTransformExceptionFilter extends AllExceptionsFilter {
+  protected override readonly passThrough = true;
+}
+
+export const NO_TRANSFORM_KEY = 'heyatom:no-transform';
+
+/**
+ * Opts a handler (or a whole controller) out of the `{ data }` envelope and of the
+ * error-body normalization (api.md §2–§3): files, streams, redirects, JWKS/OAuth,
+ * health checks, inbound webhook replies. The scoped filter (an instance: no provider
+ * needed) covers guard rejections too, with or without `TransformInterceptor`.
+ */
+export const NoTransform = () =>
+  applyDecorators(SetMetadata(NO_TRANSFORM_KEY, true), UseFilters(new NoTransformExceptionFilter()));
+
 /** Nest exception body (string, `{ message, error }`, or a domain `{ code, message, … }`) → api.md §3 shape. */
 export function normalize(status: number, raw: string | object, requestId: string | undefined): ErrorBody {
   if (typeof raw === 'string') {
     return { statusCode: status, code: defaultErrorCode(status), message: raw, requestId };
   }
-  const { error: _nestLabel, statusCode: _s, message, code, errors, ...extra } = raw as Record<string, unknown>;
+  const { statusCode: _s, message, code, errors, ...extra } = raw as Record<string, unknown>;
+  // Nest's label (`error: 'Conflict'`) only: a structured `error` (terminus' indicator map) is data.
+  if (typeof extra.error === 'string') delete extra.error;
   const validation = Array.isArray(message);
   return {
     ...extra,
     statusCode: status,
-    code: typeof code === 'string' ? code : validation && status === 400 ? 'VALIDATION_FAILED' : defaultErrorCode(status),
+    code: typeof code === 'string' ? code : validation ? 'VALIDATION_FAILED' : defaultErrorCode(status),
     message: validation ? 'Validation failed' : typeof message === 'string' ? message : defaultMessage(status),
     ...(validation ? { errors: (message as unknown[]).map(String) } : Array.isArray(errors) ? { errors: errors.map(String) } : {}),
     requestId,

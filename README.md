@@ -17,7 +17,7 @@ Ships CJS and ESM. Requires Node ≥ 20.19.
 |---|---|---|
 | `@heyatom/nest-common` | `PageParams`, `paginate()`, `TransformInterceptor`, `AllExceptionsFilter`, `setupSwagger()`, `loggerParams()`, `setupHttpApp()` | `@nestjs/common`, `@nestjs/core`, `@nestjs/platform-express`, `@nestjs/swagger`, `class-validator`, `class-transformer`, `helmet`, `rxjs`, `reflect-metadata`, `nestjs-pino` |
 | `@heyatom/nest-common/metrics` | `MetricsModule`, `MetricsService` | `@nestjs/common`, `@prometheus-io/client` (optional peer: install it to use this entry point) |
-| `@heyatom/nest-common/webhooks` | `assertPublicWebhookUrl()`, `checkWebhookUrl()`, `isWebhookTargetBlocked()`, `webhookAgent`, `signStandardWebhook()` | none |
+| `@heyatom/nest-common/webhooks` | `assertPublicWebhookUrl()`, `checkWebhookUrl()`, `isWebhookTargetBlocked()`, `webhookAgent`, `postWebhook()`, `signStandardWebhook()` | none |
 
 The root entry point loads all of its peers at import time, so they are required peers;
 `nestjs-pino` (used only for types) and `@prometheus-io/client` are optional.

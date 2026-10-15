@@ -8,12 +8,12 @@ is in the package, and what is not, are in [`DECISIONS.md`](DECISIONS.md).
 Entry points:
 
 - `@heyatom/nest-common`
-  - `PageParams`, `paginate()`, `PageMetaDto`, `ApiPaginatedResponse()` (§1)
+  - `PageParams`, `paginate()`, `markPaginated()`, `PageMetaDto`, `ApiPaginatedResponse()` (§1)
   - `TransformInterceptor` + `@NoTransform()` (§2)
   - `AllExceptionsFilter` with the Prisma mapping (§3)
   - `swaggerEnabled()`, `createOpenApiDocument()`, `setupSwagger()` (§4)
   - `loggerParams()`, `genReqId`, `clientRequestId()` (§7)
-  - `setupHttpApp()`, `parseCorsOrigins()`, `readAppVersion()` (§8)
+  - `setupHttpApp()`, `parseCorsOrigins()`, `readAppInfo()`, `readAppVersion()` (§8)
 - `@heyatom/nest-common/metrics`
   - `MetricsModule`: own `GET /metrics` server on `:9091` and the
     `http_request_duration_seconds` middleware
@@ -51,7 +51,8 @@ async function bootstrap() {
     corsAllowedHeaders: ['Idempotency-Key'], // custom headers the service really accepts
     // X-Request-Id is always exposed to browsers; add the service's own response headers:
     // corsExposedHeaders: ['X-Deploy-Color'],
-    // jsonBodyLimit: '1mb',
+    // jsonBodyLimit: '1mb', urlencodedBodyLimit: '100kb',
+    // helmet: { crossOriginResourcePolicy: { policy: 'cross-origin' } }, // CDN embedded by other sites
   });
 
   if (config.get('ENABLE_SWAGGER') === 'true') {
@@ -63,17 +64,30 @@ void bootstrap();
 ```
 
 ```ts
-// src/common/version.ts — same result from src/ and dist/
-import { join } from 'node:path';
-import { readAppVersion } from '@heyatom/nest-common';
-export const APP_VERSION = readAppVersion(join(__dirname, '../..'));
+// src/common/version.ts — walks up to the first package.json: same from src/, dist/, dist/src/
+import { readAppInfo } from '@heyatom/nest-common';
+export const { name: APP_NAME, version: APP_VERSION } = readAppInfo(__dirname);
 ```
+
+`setupHttpApp` details:
+- Registers first a middleware that assigns the request id, so body-parser errors (malformed JSON
+  400, 413, 415) carry `requestId` and `X-Request-Id` like every other response.
+- `corsOrigins: '*'` (or a `'*'` entry, e.g. `CORS_ORIGINS=*`) answers any origin, without
+  credentials: browsers refuse `*` with credentials.
+- `corsAllowedHeaders` is added to a base of only `Content-Type, Authorization`: list every other
+  request header the service reads from browsers (`X-API-Key`, `Idempotency-Key`, …).
+- `helmet` replaces helmet's defaults. Two cases to know: `Cross-Origin-Resource-Policy:
+  same-origin` (default) blocks `<img>`/`<video>` embedded by other sites, so a CDN passes
+  `crossOriginResourcePolicy: { policy: 'cross-origin' }`; the default CSP has
+  `upgrade-insecure-requests`, so `/docs` served over plain http (LAN IP) loads no JS/CSS — outside
+  production pass `contentSecurityPolicy: { directives: { upgradeInsecureRequests: null } }`.
 
 ```ts
 // config validation: resolve the fail-closed Swagger default once
 import { swaggerEnabled } from '@heyatom/nest-common';
 validated.ENABLE_SWAGGER ??= String(swaggerEnabled(validated));
 // unset or unexpected NODE_ENV → false; development/test → true; explicit ENABLE_SWAGGER wins
+// own environment names: swaggerEnabled(validated, ['development', 'develop', 'test'])
 ```
 
 ```ts
@@ -129,11 +143,14 @@ loggerParams({ service: 'beacon', level, serializers: { req: requestLogSerialize
 ```
 
 The return type narrows `pinoHttp` to the options object, so `{ ...params.pinoHttp, … }` needs
-no cast.
+no cast. For a destination stream (tests) pass nestjs-pino's tuple form yourself:
+`LoggerModule.forRoot({ pinoHttp: [loggerParams(opts).pinoHttp, stream] })`. `serializers.err`
+replaces pino's error serializer. `service` is in pino's `base`, so lines outside requests
+(`Bootstrap`, `MetricsServer`, …) carry it too.
 
 ### Request id
 
-`genReqId` (used by `loggerParams`) always generates a UUID and sets it as the `X-Request-Id`
+`genReqId` (used by `loggerParams`) reuses the id `setupHttpApp` assigned, or generates a UUID and sets it as the `X-Request-Id`
 response header, before any guard runs, so errors carry it too and the filter repeats it as
 `requestId`. The caller's `X-Request-Id` is never adopted nor echoed: when it matches
 `/^[A-Za-z0-9._-]{1,64}$/` it is logged as `clientRequestId`, otherwise dropped. Outbound calls
@@ -173,6 +190,9 @@ through `paginate()`. Add extra fields inside `meta` on the returned object
 (`{ ...page }`, `Object.assign`, `structuredClone`, class-transformer, `ClassSerializerInterceptor`)
 and the list comes out as `{ data: { data, meta } }`. Serialize the items *before* `paginate()`.
 
+A page whose `meta` is not `PageMeta` (`pageSize`) or a `{ data, meta }` relayed as is from
+Articuno/FileHarbor goes through `markPaginated(page)`: same object, marked.
+
 ## Errors
 
 ```ts
@@ -183,16 +203,27 @@ throw new ConflictException({ code: 'SLUG_TAKEN', message: 'Slug already in use'
 - `code` from the body when declared, else from the status (`BAD_REQUEST`, `UNAUTHORIZED`,
   `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `PAYLOAD_TOO_LARGE`, `UNPROCESSABLE`, `RATE_LIMITED`,
   `INTERNAL_ERROR`, `UPSTREAM`, `UNAVAILABLE`, otherwise the `HttpStatus` name).
-- `ValidationPipe` errors → `400 VALIDATION_FAILED`, `message: 'Validation failed'`, `errors: string[]`.
-- Extra fields of the exception body are kept (`errorType`, `logId`, …); Nest's `error` label is dropped.
-  `retryAfterSeconds: number` also becomes a `Retry-After` header.
+- `ValidationPipe` errors (any body whose `message` is an array, whatever the status) →
+  `VALIDATION_FAILED`, `message: 'Validation failed'`, `errors: string[]`.
+- Extra fields of the exception body are sent to the client as they are (`errorType`, `logId`, …):
+  put in an `HttpException` only what the caller may read. Nest's string `error` label is
+  dropped; a structured `error` is kept.
+- `retryAfterSeconds: number` becomes a `Retry-After` header and is removed from the body.
+- body-parser errors (malformed JSON 400, 413, 415, aborted request) keep their 4xx status;
+  `message` is the parser's only when it is meant to be exposed.
 - Prisma: `P2002` → 409 `CONFLICT` "Resource already exists"; `P2003` → 409 `CONFLICT`
   "Related resource constraint failed" (raised on delete-in-use and on writes with an unknown
   foreign key: check references first to answer 404); `P2025` → 404 `NOT_FOUND`; any other → 500.
 - Anything else → 500 `INTERNAL_ERROR`, generic message; the error and stack go to the log only.
-- `@NoTransform()` handlers keep the exception body as is (e.g. terminus' 503 with `details`).
-  The flag reaches the filter through `TransformInterceptor`, so register both.
-- Logs `error` on 5xx, `warn` on 401/403/429, nothing on other 4xx (scanner 404s stay silent).
+- `@NoTransform()` handlers keep the exception body as is (e.g. terminus' 503 with `details`),
+  guard rejections included: the decorator applies its own scoped filter, so it works without
+  `TransformInterceptor` too.
+- Logs `error` with stack on 5xx, `warn` on 401/403/429 and on an `HttpException` 502/503/504
+  (deliberate: queue full, upstream down), nothing on other 4xx (scanner 404s stay silent).
+  Log lines carry the route pattern (`GET /albums/shared/:token`, `unmatched`), never the raw
+  path. Prisma errors are logged by name, code and stack frames only: their message quotes the
+  invocation arguments.
+- `requestId` is always present: without `loggerParams`/`setupHttpApp` the filter generates one.
 
 ## Metrics
 
@@ -274,6 +305,20 @@ try {
   with `NODE_ENV=production` in the config validation.
 - For `https.request` pass `agent: webhookAgent`; with a custom agent or `http`, pass
   `lookup: webhookLookup()`.
+- With axios set `proxy: false`: otherwise `HTTP(S)_PROXY` env vars route the request through a
+  proxy, the agent's `lookup` never sees the target and the guard is bypassed.
+- A fixed host allowlist is a valid alternative to the save-time DNS check for services whose
+  targets are known in advance.
+- `fetch` cannot take an `https.Agent`: use `postWebhook(url, body, headers, { timeoutMs?, policy? })`
+  (Node `https`, same pinned lookup, no redirects, 10 s default timeout → `ETIMEDOUT`, response body
+  capped at 64 KiB). It returns `{ status, body }` and rethrows errors as is, so
+  `isWebhookTargetBlocked(err)` works on them.
+- Reasons: `DNS_UNRESOLVED` and `DNS_NON_PUBLIC` never opened a socket and are terminal.
+  `DNS_TRANSIENT` (`EAI_AGAIN`, `ETIMEOUT`, `ESERVFAIL`, `ECONNREFUSED`) is a resolver hiccup, not a
+  verdict: `isWebhookTargetBlocked()` is `false`, so deliveries retry with backoff. At save time answer
+  400 or 503, at the service's choice. All reasons share one public message.
+- The pinned lookup honours `options.family` (4/6/`'IPv4'`/`'IPv6'`); every family is still resolved
+  and checked first. `hints` and `verbatim` are ignored.
 
 ### Signature test vector
 

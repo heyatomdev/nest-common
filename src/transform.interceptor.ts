@@ -4,26 +4,11 @@ import {
   Inject,
   Injectable,
   type NestInterceptor,
-  SetMetadata,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { map, type Observable } from 'rxjs';
+import { NO_TRANSFORM_KEY, NO_TRANSFORM_REQUEST } from './exception.filter.js';
 import { isPaginated } from './pagination.js';
-
-export const NO_TRANSFORM_KEY = 'heyatom:no-transform';
-
-/**
- * Opts a handler (or a whole controller) out of the `{ data }` envelope and of the
- * error-body normalization (api.md §2–§3): files, streams, redirects, JWKS/OAuth,
- * health checks, inbound webhook replies.
- */
-export const NoTransform = () => SetMetadata(NO_TRANSFORM_KEY, true);
-
-/**
- * Set on the request by `TransformInterceptor` for `@NoTransform()` handlers: exception
- * filters get no handler/class from Nest, so this is how the filter learns about it.
- */
-export const NO_TRANSFORM_REQUEST = Symbol.for('@heyatom/nest-common/no-transform');
 
 /**
  * Wraps every 2xx JSON body in `{ data }` (api.md §2). Passes through:

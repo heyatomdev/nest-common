@@ -2,7 +2,11 @@ import 'reflect-metadata';
 import {
   BadRequestException,
   Body,
+  CanActivate,
   ConflictException,
+  Logger,
+  UnauthorizedException,
+  UseGuards,
   Controller,
   Get,
   HttpCode,
@@ -16,7 +20,7 @@ import { APP_FILTER, APP_INTERCEPTOR, NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { IsString } from 'class-validator';
 import { LoggerModule } from 'nestjs-pino';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   AllExceptionsFilter,
   loggerParams,
@@ -35,6 +39,12 @@ class CreateDto {
 
 const prismaError = (code: string) =>
   Object.assign(new Error(`prisma ${code}`), { name: 'PrismaClientKnownRequestError', code });
+
+class DenyGuard implements CanActivate {
+  canActivate(): boolean {
+    throw new UnauthorizedException({ status: 'denied' });
+  }
+}
 
 @Controller()
 class TestController {
@@ -135,6 +145,30 @@ class TestController {
   @NoTransform()
   ready() {
     throw new ServiceUnavailableException({ status: 'error', details: { database: { status: 'down' } } });
+  }
+
+  @Get('raw-guarded')
+  @NoTransform()
+  @UseGuards(DenyGuard)
+  rawGuarded() {
+    return { never: true };
+  }
+
+  @Get('render-busy')
+  renderBusy() {
+    throw new ServiceUnavailableException({ message: 'renderer queue full', retryAfterSeconds: 3 });
+  }
+
+  @Get('shared/:token')
+  shared() {
+    throw new UnauthorizedException();
+  }
+
+  @Get('prisma-validation')
+  prismaValidation() {
+    throw Object.assign(new Error('Invalid `prisma.user.create()` invocation: { passwordHash: "secret-hash" }'), {
+      name: 'PrismaClientValidationError',
+    });
   }
 
   @Get('users/:id')
@@ -264,10 +298,54 @@ describe('exception filter', () => {
     expect((await json('/list?limit=500')).status).toBe(400);
   });
 
-  it('turns retryAfterSeconds into a Retry-After header', async () => {
-    const { status, res } = await json('/busy');
+  it('turns retryAfterSeconds into a Retry-After header, not a body field', async () => {
+    const { status, res, body } = await json('/busy');
     expect(status).toBe(429);
     expect(res.headers.get('retry-after')).toBe('7');
+    expect(body).not.toHaveProperty('retryAfterSeconds');
+  });
+
+  it('maps body-parser errors (malformed JSON, too large) to their 4xx with a requestId', async () => {
+    const post = (body: string) =>
+      fetch(`${base}/items`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+    const bad = await post('{"email":');
+    const badBody = (await bad.json()) as Record<string, unknown>;
+    expect(bad.status).toBe(400);
+    expect(badBody).toMatchObject({ statusCode: 400, code: 'BAD_REQUEST' });
+    expect(badBody.requestId).toBe(bad.headers.get('x-request-id'));
+    expect(badBody.requestId).toMatch(/^[0-9a-f-]{36}$/);
+
+    const big = await post(JSON.stringify({ name: 'x'.repeat(2 * 1024 * 1024) }));
+    const bigBody = (await big.json()) as Record<string, unknown>;
+    expect(big.status).toBe(413);
+    expect(bigBody).toMatchObject({ statusCode: 413, code: 'PAYLOAD_TOO_LARGE' });
+    expect(bigBody.requestId).toBe(big.headers.get('x-request-id'));
+  });
+
+  it('keeps the body of a guard rejection on @NoTransform() handlers', async () => {
+    const { status, body } = await json('/raw-guarded');
+    expect(status).toBe(401);
+    expect(body).toEqual({ status: 'denied' });
+  });
+
+  it('logs route patterns, never raw paths; deliberate 503 as warn without stack; Prisma args never', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    try {
+      await json('/shared/tok-secret-123');
+      await json('/render-busy');
+      await json('/prisma-validation');
+      const lines = JSON.stringify([...warn.mock.calls, ...error.mock.calls]);
+      expect(lines).not.toContain('tok-secret-123');
+      expect(lines).toContain('401 GET /shared/:token');
+      expect(warn.mock.calls.some(([m]) => String(m).startsWith('503 GET /render-busy'))).toBe(true);
+      expect(error.mock.calls.some(([m]) => String(m).includes('render-busy'))).toBe(false);
+      expect(lines).toContain('PrismaClientValidationError');
+      expect(lines).not.toContain('secret-hash');
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
   });
 
   it('passes the exception body through on @NoTransform() handlers', async () => {

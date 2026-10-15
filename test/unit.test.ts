@@ -9,13 +9,17 @@ import {
   genReqId,
   isPaginated,
   loggerParams,
+  markPaginated,
   normalize,
   PageParams,
   paginate,
   parseCorsOrigins,
   prismaErrorCode,
+  readAppInfo,
+  readAppVersion,
   swaggerEnabled,
 } from '../src';
+import { join } from 'node:path';
 
 describe('paginate', () => {
   it('builds { data, meta } with totalPages rounded up', () => {
@@ -107,6 +111,29 @@ describe('swaggerEnabled', () => {
   ])('%j → %s', (env, expected) => {
     expect(swaggerEnabled(env)).toBe(expected);
   });
+
+  it('accepts a service-specific list of development environments', () => {
+    expect(swaggerEnabled({ NODE_ENV: 'develop' })).toBe(false);
+    expect(swaggerEnabled({ NODE_ENV: 'develop' }, ['develop', 'test'])).toBe(true);
+    expect(swaggerEnabled({}, ['develop'])).toBe(false);
+  });
+});
+
+describe('readAppInfo', () => {
+  it('walks up to the first package.json (dist/src/ layout)', () => {
+    const info = readAppInfo(join(__dirname, 'deep', 'dist', 'src'));
+    expect(info.name).toBe('@heyatom/nest-common');
+    expect(readAppVersion(__dirname)).toBe(info.version);
+  });
+});
+
+describe('markPaginated', () => {
+  it('marks a hand-built or upstream page in place', () => {
+    const upstream = { data: [1], meta: { total: 1, page: 1, pageSize: 20 } };
+    expect(markPaginated(upstream)).toBe(upstream);
+    expect(isPaginated(upstream)).toBe(true);
+    expect(Object.keys(upstream)).toEqual(['data', 'meta']);
+  });
 });
 
 describe('request id', () => {
@@ -117,6 +144,12 @@ describe('request id', () => {
     expect(clientRequestId('has space')).toBeUndefined();
     expect(clientRequestId(['a', 'b'])).toBeUndefined();
     expect(clientRequestId(undefined)).toBeUndefined();
+  });
+
+  it('genReqId reuses the id setupHttpApp assigned before the body parser', () => {
+    const req = { id: 'early-id', headers: {} } as unknown as IncomingMessage;
+    const res = { setHeader: () => { throw new Error('header already set'); } } as unknown as ServerResponse;
+    expect(genReqId(req, res)).toBe('early-id');
   });
 
   it('genReqId ignores the caller header and sets its own on the response', () => {
@@ -145,8 +178,12 @@ describe('loggerParams', () => {
   });
 
   it('logs the service and a valid caller id as clientRequestId only', () => {
-    expect(http.customProps({ headers: { 'x-request-id': 'ok-1' } })).toEqual({ service: 'herald', clientRequestId: 'ok-1' });
-    expect(http.customProps({ headers: { 'x-request-id': 'bad id' } })).toEqual({ service: 'herald' });
+    expect(http.customProps({ headers: { 'x-request-id': 'ok-1' } })).toEqual({ clientRequestId: 'ok-1' });
+    expect(http.customProps({ headers: { 'x-request-id': 'bad id' } })).toEqual({});
+  });
+
+  it('puts service in base, so lines outside requests carry it too', () => {
+    expect((http as unknown as { base: Record<string, unknown> }).base).toMatchObject({ service: 'herald', pid: process.pid });
   });
 
   it('removes credential headers and the extra paths, and is not pretty by default', () => {
@@ -231,6 +268,14 @@ describe('error mapping', () => {
     expect(normalize(409, { code: 'SLUG_TAKEN', message: 'Slug taken', error: 'Conflict', logId: 'l1' }, 'r1')).toEqual({
       statusCode: 409, code: 'SLUG_TAKEN', message: 'Slug taken', logId: 'l1', requestId: 'r1',
     });
+  });
+
+  it('keeps a structured `error` (terminus indicator map), drops only the string label', () => {
+    expect(normalize(503, { message: 'down', error: { db: { status: 'down' } } }, 'r')).toMatchObject({ error: { db: { status: 'down' } } });
+  });
+
+  it('reports VALIDATION_FAILED for a validation array whatever the status', () => {
+    expect(normalize(422, { message: ['a is bad'] }, 'r')).toMatchObject({ code: 'VALIDATION_FAILED', errors: ['a is bad'] });
   });
 
   it('cannot let a body override statusCode or requestId', () => {

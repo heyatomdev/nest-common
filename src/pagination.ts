@@ -67,6 +67,15 @@ export function isPaginated(value: unknown): boolean {
   return typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[PAGINATED] === true;
 }
 
+/**
+ * Marks an already-built `{ data, meta }` as a page: a `meta` with service-specific fields
+ * (`pageSize`) or a list relayed from an upstream platform service. Same object, returned.
+ */
+export function markPaginated<T extends { data: unknown[]; meta: object }>(page: T): T {
+  Object.defineProperty(page, PAGINATED, { value: true, enumerable: false, configurable: true });
+  return page;
+}
+
 export function paginate<T>(
   data: T[],
   total: number,
@@ -82,8 +91,7 @@ export function paginate<T>(
       totalPages: params.limit > 0 ? Math.ceil(total / params.limit) : 0,
     },
   };
-  Object.defineProperty(result, PAGINATED, { value: true, enumerable: false });
-  return result;
+  return markPaginated(result);
 }
 
 /**
