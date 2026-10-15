@@ -152,7 +152,7 @@ describe('webhookLookup', () => {
 });
 
 describe('signStandardWebhook', () => {
-  // Shared test vector (README): @heyatom/client's verifier must accept exactly these.
+  // Shared test vector (docs/usage.md): @heyatom/client's verifier must accept exactly these.
   const vector = {
     id: 'msg_2Kx9a',
     timestamp: 1760529600,

@@ -246,7 +246,7 @@ Tracing distribuito (OpenTelemetry): il request-id diventa il trace id.
 Adottando il package in gatherly sono emersi due problemi.
 - Senza serializer custom, pino-http logga tutti gli header della richiesta, compreso
   l'`X-Request-Id` grezzo del client: la validazione di `clientRequestId` non serviva a niente.
-- `Params` tipizza `pinoHttp` come un'unione, quindi lo spread suggerito dal README richiedeva un
+- `Params` tipizza `pinoHttp` come un'unione, quindi lo spread suggerito dalla guida d'uso (`docs/usage.md`) richiedeva un
   cast.
 
 La decisione:
@@ -356,7 +356,7 @@ Il subpath `@heyatom/nest-common/webhooks` non dipende da Nest: usa solo i built
   `webhook-timestamp` e `webhook-signature`. La firma è `v1,<base64>`, una per secret, separate
   da spazio durante la rotazione. La chiave HMAC è il secret come stringa UTF-8, come fa oggi
   gatherly: compatibile byte per byte (c'è un test dedicato).
-- Il README contiene un test vector fisso che `@heyatom/client` riusa per il verificatore.
+- `docs/usage.md` contiene un test vector fisso che `@heyatom/client` riusa per il verificatore.
 
 La **verifica** andrà in `@heyatom/client` in un secondo momento: dbdbuilds-api e gli altri
 riceventi non dipendono da nest-common. Bastion passa a questo modulo, e al formato Standard
@@ -418,7 +418,7 @@ una codifica del secret senza rompere il test vector.
 - `message` non contiene mai l'host. I tre motivi legati all'indirizzo hanno lo stesso testo
   ("target is not publicly reachable"), quindi il `message` si può restituire al chiamante così
   com'è.
-- Tutti i peer sono `optional`; il README dice quali servono per ogni entry point.
+- Tutti i peer sono `optional`; README e `docs/usage.md` dicono quali servono per ogni entry point.
 
 Rilascio insieme ai fix trovati adottando il package negli altri servizi.
 
