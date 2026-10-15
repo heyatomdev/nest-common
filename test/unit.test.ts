@@ -125,6 +125,10 @@ describe('readAppInfo', () => {
     expect(info.name).toBe('@heyatom/nest-common');
     expect(readAppVersion(__dirname)).toBe(info.version);
   });
+
+  it('skips a package.json without a version (dist stub)', () => {
+    expect(readAppInfo(join(__dirname, 'fixtures', 'dist-stub')).name).toBe('@heyatom/nest-common');
+  });
 });
 
 describe('markPaginated', () => {

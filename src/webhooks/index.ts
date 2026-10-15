@@ -242,6 +242,9 @@ export async function postWebhook(
         method: 'POST',
         headers: { ...headers, 'Content-Length': Buffer.byteLength(body) },
         lookup: webhookLookup(opts.policy) as never,
+        // No pooled socket: the global agent keys by host:port, so it could hand over a keep-alive
+        // connection some other code opened to the same name without the public-address check.
+        agent: false,
       },
       (res) => {
         const chunks: Buffer[] = [];

@@ -64,7 +64,7 @@ export function setupHttpApp(app: NestExpressApplication, opts: HttpAppOptions):
   app.set('trust proxy', opts.trustProxyHops);
   app.use(helmet(opts.helmet));
   const anyOrigin = opts.corsOrigins === '*' || opts.corsOrigins.includes('*');
-  const origins = new Set(opts.corsOrigins);
+  const origins = new Set(anyOrigin ? [] : opts.corsOrigins);
   app.enableCors({
     // A disallowed origin gets no CORS headers and the browser blocks it; an Error here would be a 500.
     origin: anyOrigin
@@ -84,15 +84,19 @@ export function setupHttpApp(app: NestExpressApplication, opts: HttpAppOptions):
 }
 
 /**
- * `name` and `version` of the first package.json found walking up from `dir`: the same from
+ * `name` and `version` of the first package.json with a `version` walking up from `dir` (a
+ * `dist/package.json` stub such as `{"type":"commonjs"}` is skipped): the same from
  * `src/`, `dist/` and `dist/src/`. Call it with `__dirname` (or `process.cwd()`).
  * Not `npm_package_version`, unset under `node dist/main.js`.
  */
 export function readAppInfo(dir: string): { name: string; version: string } {
   for (let d = dir; ; d = dirname(d)) {
     const file = join(d, 'package.json');
-    if (existsSync(file)) return JSON.parse(readFileSync(file, 'utf8')) as { name: string; version: string };
-    if (dirname(d) === d) throw new Error(`readAppInfo: no package.json above ${dir}`);
+    if (existsSync(file)) {
+      const pkg = JSON.parse(readFileSync(file, 'utf8')) as { name: string; version?: string };
+      if (typeof pkg.version === 'string') return pkg as { name: string; version: string };
+    }
+    if (dirname(d) === d) throw new Error(`readAppInfo: no package.json with a version above ${dir}`);
   }
 }
 

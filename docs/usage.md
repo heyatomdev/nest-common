@@ -216,8 +216,10 @@ throw new ConflictException({ code: 'SLUG_TAKEN', message: 'Slug already in use'
   foreign key: check references first to answer 404); `P2025` → 404 `NOT_FOUND`; any other → 500.
 - Anything else → 500 `INTERNAL_ERROR`, generic message; the error and stack go to the log only.
 - `@NoTransform()` handlers keep the exception body as is (e.g. terminus' 503 with `details`),
-  guard rejections included: the decorator applies its own scoped filter, so it works without
-  `TransformInterceptor` too.
+  guard rejections included: the decorator applies its own scoped catch-all filter, so it works
+  without `TransformInterceptor` too. That filter runs before the controller's `@UseFilters()`
+  and shadows them: where those must still apply, use `@NoTransform({ filter: false })`
+  (metadata only, the 0.2 behaviour).
 - Logs `error` with stack on 5xx, `warn` on 401/403/429 and on an `HttpException` 502/503/504
   (deliberate: queue full, upstream down), nothing on other 4xx (scanner 404s stay silent).
   Log lines carry the route pattern (`GET /albums/shared/:token`, `unmatched`), never the raw

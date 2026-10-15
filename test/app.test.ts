@@ -1,8 +1,12 @@
 import 'reflect-metadata';
 import {
   BadRequestException,
+  type ArgumentsHost,
   Body,
   CanActivate,
+  Catch,
+  type ExceptionFilter,
+  UseFilters,
   ConflictException,
   Logger,
   UnauthorizedException,
@@ -43,6 +47,40 @@ const prismaError = (code: string) =>
 class DenyGuard implements CanActivate {
   canActivate(): boolean {
     throw new UnauthorizedException({ status: 'denied' });
+  }
+}
+
+class DomainError extends Error {}
+
+@Catch(DomainError)
+class DomainFilter implements ExceptionFilter {
+  catch(_e: DomainError, host: ArgumentsHost) {
+    host.switchToHttp().getResponse<{ status(n: number): { json(b: unknown): void } }>().status(418).json({ custom: true });
+  }
+}
+
+@Controller('raw-class')
+@NoTransform()
+class RawClassController {
+  @Get()
+  item() {
+    return { raw: true };
+  }
+
+  @Get('guarded')
+  @UseGuards(DenyGuard)
+  guarded() {
+    return {};
+  }
+}
+
+@Controller('filtered')
+@UseFilters(DomainFilter)
+class FilteredController {
+  @Get()
+  @NoTransform({ filter: false })
+  item() {
+    throw new DomainError();
   }
 }
 
@@ -171,6 +209,12 @@ class TestController {
     });
   }
 
+  @Get('axios-like')
+  axiosLike() {
+    // An upstream 502 surfacing as AxiosError: `status` is the upstream's, no `expose`/`statusCode`.
+    throw Object.assign(new Error('Request failed with status code 502'), { name: 'AxiosError', status: 502 });
+  }
+
   @Get('users/:id')
   user() {
     return { ok: true };
@@ -182,7 +226,7 @@ class TestController {
     LoggerModule.forRoot(loggerParams({ service: 'test', level: 'silent' })),
     MetricsModule.forRootAsync({ useFactory: () => ({ app: 'test', port: 0, host: '127.0.0.1' }) }),
   ],
-  controllers: [TestController],
+  controllers: [TestController, RawClassController, FilteredController],
   providers: [
     { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
@@ -322,6 +366,23 @@ describe('exception filter', () => {
     expect(bigBody.requestId).toBe(big.headers.get('x-request-id'));
   });
 
+  it('keeps an upstream status on a non-http-errors error as 500 (AxiosError shape)', async () => {
+    expect((await json('/axios-like')).body).toMatchObject({ statusCode: 500, code: 'INTERNAL_ERROR' });
+  });
+
+  it('applies @NoTransform() on a whole controller, guard rejections included', async () => {
+    expect((await json('/raw-class')).body).toEqual({ raw: true });
+    const { status, body } = await json('/raw-class/guarded');
+    expect(status).toBe(401);
+    expect(body).toEqual({ status: 'denied' });
+  });
+
+  it('leaves the controller filters in charge with @NoTransform({ filter: false })', async () => {
+    const { status, body } = await json('/filtered');
+    expect(status).toBe(418);
+    expect(body).toEqual({ custom: true });
+  });
+
   it('keeps the body of a guard rejection on @NoTransform() handlers', async () => {
     const { status, body } = await json('/raw-guarded');
     expect(status).toBe(401);
@@ -389,6 +450,30 @@ describe('http setup', () => {
 
   it('sets helmet headers', async () => {
     expect((await get('/item')).headers.get('x-content-type-options')).toBe('nosniff');
+  });
+});
+
+describe('CORS any origin', () => {
+  it("answers '*' without credentials", async () => {
+    @Controller()
+    class C {
+      @Get('x')
+      x() {
+        return 1;
+      }
+    }
+    @Module({ controllers: [C] })
+    class M {}
+    const a = await NestFactory.create<NestExpressApplication>(M, { logger: false });
+    setupHttpApp(a, { trustProxyHops: 0, corsOrigins: '*' });
+    await a.listen(0, '127.0.0.1');
+    try {
+      const res = await fetch(`${await a.getUrl()}/x`, { headers: { Origin: 'https://any.test' } });
+      expect(res.headers.get('access-control-allow-origin')).toBe('*');
+      expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+    } finally {
+      await a.close();
+    }
   });
 });
 

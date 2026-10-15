@@ -303,6 +303,20 @@ describe('postWebhook', () => {
     expect(isWebhookTargetBlocked(err)).toBe(true);
   });
 
+  it('times out on a total deadline, also while the body is still dripping in', async () => {
+    const s = await serve((_req, res) => {
+      res.writeHead(200);
+      const t = setInterval(() => res.write('x'), 10);
+      res.on('close', () => clearInterval(t));
+    });
+    try {
+      const err = await postWebhook(s.url, '{}', {}, { timeoutMs: 100, policy: { allowPrivate: true } }).catch((e) => e);
+      expect(err.code).toBe('ETIMEDOUT');
+    } finally {
+      s.close();
+    }
+  });
+
   it('times out with ETIMEDOUT', async () => {
     const s = await serve(() => undefined);
     try {

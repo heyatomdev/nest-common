@@ -189,11 +189,18 @@ export const NO_TRANSFORM_KEY = 'heyatom:no-transform';
 /**
  * Opts a handler (or a whole controller) out of the `{ data }` envelope and of the
  * error-body normalization (api.md §2–§3): files, streams, redirects, JWKS/OAuth,
- * health checks, inbound webhook replies. The scoped filter (an instance: no provider
- * needed) covers guard rejections too, with or without `TransformInterceptor`.
+ * health checks, inbound webhook replies.
+ *
+ * By default it also applies a scoped catch-all filter (an instance: no provider needed), so
+ * guard rejections keep their body too, with or without `TransformInterceptor`. That filter
+ * runs before any `@UseFilters()` of the controller and shadows it: a handler whose own
+ * filters must still apply passes `{ filter: false }` (metadata only; the body is then kept
+ * only for errors thrown after `TransformInterceptor` ran).
  */
-export const NoTransform = () =>
-  applyDecorators(SetMetadata(NO_TRANSFORM_KEY, true), UseFilters(new NoTransformExceptionFilter()));
+export const NoTransform = (opts: { filter?: boolean } = {}) =>
+  opts.filter === false
+    ? SetMetadata(NO_TRANSFORM_KEY, true)
+    : applyDecorators(SetMetadata(NO_TRANSFORM_KEY, true), UseFilters(new NoTransformExceptionFilter()));
 
 /** Nest exception body (string, `{ message, error }`, or a domain `{ code, message, … }`) → api.md §3 shape. */
 export function normalize(status: number, raw: string | object, requestId: string | undefined): ErrorBody {
