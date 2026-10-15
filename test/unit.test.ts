@@ -7,6 +7,7 @@ import {
   clientRequestId,
   defaultErrorCode,
   genReqId,
+  isPaginated,
   loggerParams,
   normalize,
   PageParams,
@@ -26,6 +27,15 @@ describe('paginate', () => {
 
   it('has zero pages for an empty set', () => {
     expect(paginate([], 0, { page: 1, limit: 20 }).meta.totalPages).toBe(0);
+  });
+
+  it('marks its result without changing JSON or keys', () => {
+    const page = paginate([1], 1, { page: 1, limit: 20 });
+    expect(isPaginated(page)).toBe(true);
+    expect(isPaginated({ data: [1], meta: page.meta })).toBe(false);
+    expect(isPaginated({ ...page })).toBe(false);
+    expect(Object.keys(page)).toEqual(['data', 'meta']);
+    expect(JSON.parse(JSON.stringify(page))).toEqual({ data: [1], meta: page.meta });
   });
 
   it('never yields Infinity (null in JSON) for limit 0', () => {

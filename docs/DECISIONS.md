@@ -502,3 +502,39 @@ la catch di gatherly in `webhook.service.ts`, che ritentava le consegne bloccate
 ### What would change it
 Un consumer che importa solo `/webhooks` senza Nest: in quel caso i peer della root tornano
 `optional`, con un controllo esplicito all'import.
+
+## D-014 · Bug emersi dall'adozione completa in gatherly — TAKEN
+
+**Date**: 2026-10-15 · **Reference**: report della sessione gatherly; D-002
+
+### The problem
+1. **TS2883 nei consumer con TypeScript 6.** Con `module: commonjs`, TS 6 usa per default la
+   risoluzione `bundler`: risolve i tipi da `exports.require` ma, per generare la
+   dichiarazione, non trova una condizione da cui nominare il tipo.
+   - Effetto: un metodo che restituisce `paginate()` senza tipo esplicito non compila con
+     `declaration: true` ("cannot be named without a reference to …/dist/cjs").
+   - `typesVersions` non c'entra: il problema si riproduce anche senza.
+2. **`TransformInterceptor` troppo permissivo.** Lasciava passare qualunque oggetto con `data` e
+   `meta`, quindi un'entità con quei due campi usciva senza envelope.
+
+### The decision
+1. Ogni entry di `exports` ha, dopo `import`/`require`, un fallback senza condizione
+   `types`/`default` sulla build CJS. Gli ESM continuano a risolvere su `import`.
+   - `scripts/consumer-types.cjs` (`pnpm test:consumer`, in CI) installa la tarball in un
+     consumer pnpm vero e compila le dichiarazioni con `commonjs` (default `bundler`), `node10`,
+     `node16` e `nodenext`.
+   - Il check è verificato: senza il fallback fallisce su `commonjs`.
+2. `paginate()` imposta un marker non enumerabile, `Symbol.for('@heyatom/nest-common/paginated')`,
+   che l'interceptor controlla al posto della forma.
+   - Questo rivede D-002, che teneva la regola sulla forma per non wrappare due volte i
+     `{ data, meta }` costruiti a mano durante la fase 2. Oggi gatherly passa sempre da
+     `paginate()`; chi costruisce ancora le liste a mano deve migrare insieme all'adozione.
+
+### On what data
+Riprodotto in un consumer pnpm pulito con TS 6.0.3 e `@heyatom/nest-common@0.1.1`. Fix verificato
+con la tarball locale nei 4 modi di risoluzione. Gatherly non ha `{ data, meta }` costruiti a mano
+né spread di `paginate()`.
+
+### What would change it
+Se TS 6 corregge la generazione degli specifier in modalità `bundler`, il fallback diventa
+superfluo, ma resta innocuo.

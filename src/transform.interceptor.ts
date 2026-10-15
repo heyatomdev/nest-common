@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { map, type Observable } from 'rxjs';
+import { isPaginated } from './pagination.js';
 
 export const NO_TRANSFORM_KEY = 'heyatom:no-transform';
 
@@ -26,7 +27,8 @@ export const NO_TRANSFORM_REQUEST = Symbol('heyatom:no-transform');
 
 /**
  * Wraps every 2xx JSON body in `{ data }` (api.md §2). Passes through:
- * `null`/`undefined` (no body), and an already-built `{ data, meta }` from `paginate()`.
+ * `null`/`undefined` (no body), and a `paginate()` result (recognized by its marker, not by
+ * shape: an entity with `data` and `meta` fields is still wrapped).
  * Register as `APP_INTERCEPTOR`.
  */
 @Injectable()
@@ -43,7 +45,7 @@ export class TransformInterceptor implements NestInterceptor {
     return next.handle().pipe(
       map((body: unknown) => {
         if (body == null) return body;
-        if (typeof body === 'object' && 'data' in body && 'meta' in body) return body;
+        if (isPaginated(body)) return body;
         return { data: body };
       }),
     );

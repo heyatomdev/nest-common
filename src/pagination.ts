@@ -55,12 +55,24 @@ export class PageMetaDto implements PageMeta {
   @ApiProperty() totalPages!: number;
 }
 
+/**
+ * Marks a `paginate()` result so `TransformInterceptor` passes it through. `Symbol.for`: the
+ * CJS and ESM builds (or two installed copies) agree on it. Non-enumerable and a symbol, so
+ * JSON and spreads ignore it; mutate `meta` to add fields, a `{ ...result }` copy loses it.
+ */
+export const PAGINATED = Symbol.for('@heyatom/nest-common/paginated');
+
+/** True for a `paginate()` result (not for any object that happens to have `data` and `meta`). */
+export function isPaginated(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[PAGINATED] === true;
+}
+
 export function paginate<T>(
   data: T[],
   total: number,
   params: Pick<PageParams, 'page' | 'limit'>,
 ): PaginatedResult<T> {
-  return {
+  const result: PaginatedResult<T> = {
     data,
     meta: {
       total,
@@ -70,6 +82,8 @@ export function paginate<T>(
       totalPages: params.limit > 0 ? Math.ceil(total / params.limit) : 0,
     },
   };
+  Object.defineProperty(result, PAGINATED, { value: true, enumerable: false });
+  return result;
 }
 
 /**

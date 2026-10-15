@@ -25,7 +25,9 @@
       "require": {
         "types": "./dist/cjs/index.d.ts",
         "default": "./dist/cjs/index.js"
-      }
+      },
+      "types": "./dist/cjs/index.d.ts",
+      "default": "./dist/cjs/index.js"
     },
     "./metrics": {
       "import": {
@@ -35,7 +37,9 @@
       "require": {
         "types": "./dist/cjs/metrics/index.d.ts",
         "default": "./dist/cjs/metrics/index.js"
-      }
+      },
+      "types": "./dist/cjs/metrics/index.d.ts",
+      "default": "./dist/cjs/metrics/index.js"
     },
     "./webhooks": {
       "import": {
@@ -45,7 +49,9 @@
       "require": {
         "types": "./dist/cjs/webhooks/index.d.ts",
         "default": "./dist/cjs/webhooks/index.js"
-      }
+      },
+      "types": "./dist/cjs/webhooks/index.d.ts",
+      "default": "./dist/cjs/webhooks/index.js"
     }
   },
   "typesVersions": {
@@ -66,7 +72,8 @@
     "test": "vitest run",
     "lint": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "pnpm lint && pnpm test && pnpm build && pnpm test:di",
-    "test:di": "node scripts/di-smoke.cjs"
+    "test:di": "node scripts/di-smoke.cjs",
+    "test:consumer": "node scripts/consumer-types.cjs"
   },
   "engines": {
     "node": ">=20.19"

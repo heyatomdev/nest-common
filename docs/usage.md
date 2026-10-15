@@ -165,7 +165,11 @@ get() { return event; }             // → { data: event }
 jwks() { return { keys }; }
 ```
 
-`TransformInterceptor` passes `null`/`undefined` and an existing `{ data, meta }` through.
+`TransformInterceptor` passes `null`/`undefined` and `paginate()` results through. A
+`paginate()` result carries a hidden marker (`isPaginated()`), so an entity that merely has `data`
+and `meta` fields is still wrapped, and a hand-built `{ data, meta }` is wrapped too: always go
+through `paginate()`. Add extra fields inside `meta` on the returned object
+(`page.meta.statusCounts = …`): a `{ ...page }` copy loses the marker.
 
 ## Errors
 

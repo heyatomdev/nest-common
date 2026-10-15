@@ -48,6 +48,18 @@ class TestController {
     return paginate([q.skip], 45, q);
   }
 
+  @Get('shaped')
+  shaped() {
+    return { data: 'payload', meta: 'not a page' }; // an entity that happens to have these fields
+  }
+
+  @Get('list-extra')
+  listExtra(@Query() q: PageParams) {
+    const page = paginate([1], 1, q);
+    Object.assign(page.meta, { statusCounts: { DRAFT: 1 } }); // extra fields go inside meta
+    return page;
+  }
+
   @Get('empty')
   @HttpCode(204)
   empty() {}
@@ -175,6 +187,14 @@ describe('envelope', () => {
       data: [10],
       meta: { total: 45, page: 2, limit: 10, totalPages: 5 },
     });
+  });
+
+  it('wraps an entity that merely has data and meta fields', async () => {
+    expect((await json('/shaped')).body).toEqual({ data: { data: 'payload', meta: 'not a page' } });
+  });
+
+  it('keeps the marker when extra fields are added to meta', async () => {
+    expect((await json('/list-extra')).body).toMatchObject({ data: [1], meta: { statusCounts: { DRAFT: 1 } } });
   });
 
   it('sends 204 with no body', async () => {

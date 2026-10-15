@@ -20,7 +20,7 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint && pnpm test && pnpm build && pnpm test:di
+      - run: pnpm lint && pnpm test && pnpm build && pnpm test:di && pnpm test:consumer
       - name: Check tag matches package version
         run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
       # Trusted publishing (OIDC): no NPM_TOKEN, npm mints a short-lived
