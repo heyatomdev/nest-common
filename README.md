@@ -13,9 +13,14 @@ service used to copy by hand.
 - `@heyatom/nest-common/metrics` — `MetricsModule` (own `GET /metrics` server on `:9091`,
   `http_request_duration_seconds` middleware), `MetricsService` (§5).
 
-What is deliberately **not** here (health controller, idempotency, webhook signing, throttler
-guards) and why: [`docs/DECISIONS.md`](docs/DECISIONS.md). `@Public()`, guards and audit live in
-`@heyatom/bastion-client`.
+- `@heyatom/nest-common/webhooks` — framework-free outbound webhooks (§13): SSRF guard
+  (`checkWebhookUrl()`, `assertPublicWebhookUrl()`, `webhookLookup()`, `webhookAgent`,
+  `isPublicAddress()`) and Standard Webhooks signing (`signStandardWebhook()`).
+
+What is deliberately **not** here (health controller, idempotency, webhook verification,
+throttler guards) and why: [`docs/DECISIONS.md`](docs/DECISIONS.md). `@Public()`, guards and audit
+live in `@heyatom/bastion-client`; verifying webhooks received from the platform belongs to
+`@heyatom/client`.
 
 Ships CJS and ESM. Node ≥ 20.19. Peer deps: `@nestjs/common`, `@nestjs/core`,
 `@nestjs/platform-express`, `@nestjs/swagger`, `class-validator`, `class-transformer`, `helmet`,
@@ -194,6 +199,67 @@ export class MailMetrics {
 `unmatched` for unknown routes; `/health*` is not observed. `GET /metrics` is served on its own
 port, outside the Nest router: do not publish it from the container. A render is shared for 10 s,
 so DB-backed gauges (`collect()`) run at most once per window.
+
+## Outbound webhooks
+
+No Nest dependency: `@heyatom/nest-common/webhooks` uses only Node built-ins.
+
+```ts
+import {
+  assertPublicWebhookUrl, checkWebhookUrl, signStandardWebhook, webhookAgent, WebhookUrlError,
+} from '@heyatom/nest-common/webhooks';
+
+// Save time (PATCH of the webhook URL): https only, no credentials, every DNS answer public.
+try {
+  await assertPublicWebhookUrl(dto.webhookUrl);
+} catch (err) {
+  if (err instanceof WebhookUrlError) throw new BadRequestException(err.message);
+  throw err;
+}
+
+// Send time: textual re-check (literal IPs bypass `lookup`), then the pinned agent.
+checkWebhookUrl(target.url); // throws WebhookUrlError → terminal, do not retry
+const body = JSON.stringify({ id: delivery.id, type, timestamp, data });
+const headers = signStandardWebhook({
+  id: delivery.id,
+  timestamp: Math.floor(Date.now() / 1000), // at send, not at enqueue
+  body,
+  secrets: [target.secret, ...(target.previousSecret ? [target.previousSecret] : [])],
+});
+await this.http.post(target.url, body, {
+  headers: { ...headers, 'Content-Type': 'application/json' },
+  httpsAgent: webhookAgent, // every connection resolves through the same public-only rule
+  maxRedirects: 0,
+  timeout: 10_000,
+});
+```
+
+- Blocked: RFC 1918, loopback, CGNAT, link-local and cloud metadata (`169.254.169.254`),
+  `0/8`, `192.0.0/24`, `198.18/15`, multicast/reserved; IPv6 `::/96`, ULA, link-local,
+  multicast, documentation, NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`), 6to4 (`2002::/16`);
+  IPv4-mapped (`::ffff:10.0.0.1`) is checked against the IPv4 rules; `localhost`, `*.localhost`.
+- A hostname with any non-public answer is refused, also at connect time: the address checked
+  is the address connected to, so DNS rebinding has no window.
+- `{ allowPrivate: true }` (development only) admits private targets and `http://`. Refuse it
+  with `NODE_ENV=production` in the config validation.
+- For `https.request` pass `agent: webhookAgent`; with a custom agent or `http`, pass
+  `lookup: webhookLookup()`.
+
+### Signature test vector
+
+Shared with the verifier in `@heyatom/client`: both sides must produce/accept exactly this.
+The HMAC key is the secret string as UTF-8 (gatherly's format), not a `whsec_` base64 key.
+
+| Field | Value |
+|---|---|
+| `id` | `msg_2Kx9a` |
+| `timestamp` | `1760529600` |
+| `body` | `{"type":"event.created","data":{"id":"evt_1"}}` |
+| secret | `whsec-test-current` |
+| `webhook-signature` | `v1,+VYotv/AI9wyaA68bMYdRA3RDO8k9+ppDgCTYh6aJJ4=` |
+| with rotation (`whsec-test-current`, `whsec-test-previous`) | `v1,+VYotv/AI9wyaA68bMYdRA3RDO8k9+ppDgCTYh6aJJ4= v1,TFAF/sEYytApEv9Zepsa4likR+i80NsV05Wcqt5x/5I=` |
+
+Signed content: `<id>.<timestamp>.<body>`, HMAC-SHA256, base64.
 
 ## Development
 

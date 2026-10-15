@@ -32,7 +32,7 @@ Regole di partenza:
 | D-007 | `loggerParams()` + request-id | Dentro | root |
 | D-008 | `setupHttpApp()` | Dentro (minimo) | root |
 | D-009 | Idempotency interceptor | Più avanti | — |
-| D-010 | Firma Standard Webhooks | Più avanti, in `bastion-client/webhooks` | — |
+| D-010 | Webhook in uscita: guard SSRF + firma Standard Webhooks | Dentro dalla 0.2.0 (revisione 2026-10-15) | `/webhooks` |
 | D-011 | Throttler guard per utente | Fuori | — |
 | D-012 | Niente Prisma tra le peer dependency | Presa | — |
 
@@ -292,6 +292,84 @@ esistente. I riceventi (dbdbuilds-api) devono poter verificare senza dipendere d
 
 ### What would change it
 —
+
+### Revisione 2026-10-15 — TAKEN (0.2.0)
+
+**Date**: 2026-10-15 · **Reference**: api.md §13, richiesta della sessione di analisi approvata dall'utente
+
+#### The problem
+La prima versione metteva la firma in `bastion-client`. L'utente ha ridefinito i ruoli dei package:
+- `nest-common` è il runtime lato server dei servizi, quindi anche l'**invio** dei webhook;
+- `@heyatom/client` (`heyatom-client/`) è l'SDK di chi consuma la piattaforma, quindi la
+  **verifica** dei webhook ricevuti;
+- `bastion-client` resta solo Bastion.
+
+Oltre alla firma, il codice duplicato è il guard SSRF sull'URL di destinazione, presente in 3
+copie con regole diverse:
+- bastion `modules/webhooks/webhook-target.ts`;
+- gatherly `modules/webhook/webhook-url.ts`;
+- herald `modules/newsletter/webhook-url.ts`.
+
+#### The decision
+Il subpath `@heyatom/nest-common/webhooks` non dipende da Nest: usa solo i built-in di Node.
+- `checkWebhookUrl(url, { allowPrivate? })` fa i controlli testuali: solo https, niente
+  credenziali, niente IP letterali privati, niente `localhost`/`*.localhost`. Si chiama al
+  salvataggio e prima di ogni invio.
+- `assertPublicWebhookUrl(url, { allowPrivate? })` aggiunge il DNS: ogni indirizzo risolto deve
+  essere pubblico; una risposta vuota o mancante viene rifiutata. Si usa al salvataggio.
+- `webhookLookup(policy)` e `webhookAgent` (https `Agent`) applicano la stessa regola come
+  `lookup` del socket. L'indirizzo verificato è quello a cui ci si connette: niente finestra di
+  DNS rebinding.
+- `isPublicAddress()` e `WebhookUrlError` (`code: 'WEBHOOK_TARGET_BLOCKED'`, terminale per il
+  delivery loop).
+- `signStandardWebhook({ id, timestamp, body, secrets })` restituisce gli header `webhook-id`,
+  `webhook-timestamp` e `webhook-signature`. La firma è `v1,<base64>`, una per secret, separate
+  da spazio durante la rotazione. La chiave HMAC è il secret come stringa UTF-8, come fa oggi
+  gatherly: compatibile byte per byte (c'è un test dedicato).
+- Il README contiene un test vector fisso che `@heyatom/client` riusa per il verificatore.
+
+La **verifica** andrà in `@heyatom/client` in un secondo momento: dbdbuilds-api e gli altri
+riceventi non dipendono da nest-common. Bastion passa a questo modulo, e al formato Standard
+Webhooks, quando adotta nest-common (fase 2), con l'alias V2 finché `bastion-client/webhooks`
+non è aggiornato.
+
+#### On what data
+Regole delle 3 copie a confronto. La lista del package è la loro unione più stretta.
+
+| Regola | bastion | gatherly | herald | package |
+|---|---|---|---|---|
+| IPv4 (0/8, 10/8, CGNAT, 127/8, 169.254/16, 172.16/12, 192.0.0/24, 192.168/16, 198.18/15, 224/3) | sì (224/4 + 240/4) | sì | sì | sì |
+| IPv6 `::`, `::1` | sì | sì | sì (`::/127`) | `::/96` (copre anche IPv4-compatible `::a.b.c.d`) |
+| ULA `fc00::/7`, link-local `fe80::/10` | sì | sì | sì | sì |
+| multicast `ff00::/8` | **no** | sì | sì | sì |
+| NAT64 `64:ff9b::/96` | **no** | sì | **no** | sì, più `64:ff9b:1::/48` (RFC 8215) |
+| 6to4 `2002::/16` | **no** | sì | **no** | sì |
+| documentazione `2001:db8::/32` | sì | no | no | sì |
+| IPv4-mapped `::ffff:a.b.c.d` | via `BlockList` | via `BlockList` | via `BlockList` | via `BlockList` (testato, anche in forma esadecimale `::ffff:a00:1`) |
+| solo https | sì (http con `allowPrivate`) | sì | **no**: http ammesso se `NODE_ENV !== 'production'`, anche con `NODE_ENV` assente | sì (http solo con `allowPrivate`) |
+| credenziali nell'URL rifiutate | sì | **no** | **no** | sì |
+| `localhost` / `*.localhost` | sì | sì | sì | sì |
+| risposta DNS vuota | rifiutata | **accettata** al salvataggio, TypeError su `addresses[0]` all'invio (in pratica `dns.lookup` non risponde vuoto) | rifiutata | rifiutata |
+| un indirizzo privato su più → rifiuto | sì | sì | sì | sì |
+| indirizzo fissato al connect (anti-rebinding) | sì (`http.request({ lookup })`, primo indirizzo) | sì (`Agent({ lookup })`) | **no**: resolve-then-fetch, finestra di rebinding (ponytail noto) | sì (`webhookLookup` / `webhookAgent`) |
+| escape per lo sviluppo | `WEBHOOK_ALLOW_PRIVATE_TARGETS` (rifiutato in prod) | nessuno | http fuori produzione | `allowPrivate` (http + privati); il servizio lo rifiuta in prod |
+
+NAT64 si blocca per intero, anche quando incapsula un IPv4 pubblico (`64:ff9b::8.8.8.8`): come
+gatherly, nessun servizio ha destinatari solo NAT64.
+
+#### Cosa non è stato portato
+- `postWebhook()` di bastion (client http con timeout, risposta scartata): gatherly usa `@nestjs/axios`
+  con `httpsAgent`, quindi basta l'agent. Entra se bastion e herald, adottando il modulo, finiscono
+  per scrivere lo stesso wrapper.
+- La firma legacy di ciascun servizio (`X-Webhook-Signature` di gatherly, `X-Bastion-Signature-V2`,
+  `x-webhook-signature` di articuno, `sha256=` di herald): resta nel servizio finché i consumer non
+  sono migrati (piano 01, fase 2).
+- Outbox, retry e lease: logica di dominio e schema Prisma diversi per servizio.
+- La variante di herald "http ammesso ma privati bloccati": in sviluppo si usa `allowPrivate`.
+
+#### What would change it
+Un consumer che richiede chiavi `whsec_` base64 (spec Standard Webhooks completa): si aggiunge
+una codifica del secret senza rompere il test vector.
 
 ## D-011 · Throttler guard per utente — DROPPED
 
